@@ -170,6 +170,17 @@ jobs:
           rm -f test_data.zip
           ls -lah
 
+      - name: Enforce offline mode for tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "HF_HUB_OFFLINE=1"
+            echo "TRANSFORMERS_OFFLINE=1"
+            echo "HF_DATASETS_OFFLINE=1"
+          } >> "$GITHUB_ENV"
+          echo "Offline mode variables written to GITHUB_ENV"
+
       - name: Show collected tests
         shell: bash
         run: |
@@ -185,6 +196,10 @@ jobs:
 
           echo "=== RUNNING EXTENDED VERBOSE PYTEST SUBSET ==="
           echo "This intentionally goes beyond minimal smoke coverage."
+          echo "Offline mode:"
+          echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
+          echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
+          echo "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-unset}"
           echo "Selected modules:"
           printf '%s\n' \
             tests/test_chat.py \
@@ -217,6 +232,9 @@ jobs:
           cd mlx-lm
 
           echo "=== QWEN LOAD/GENERATE CHECK ==="
+          echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
+          echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
+          echo "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-unset}"
 
           python - <<'PY'
           import os
@@ -228,6 +246,9 @@ jobs:
           print("cwd:", os.getcwd())
           print("HF_HOME:", os.environ.get("HF_HOME"))
           print("HUGGINGFACE_HUB_CACHE:", os.environ.get("HUGGINGFACE_HUB_CACHE"))
+          print("HF_HUB_OFFLINE:", os.environ.get("HF_HUB_OFFLINE"))
+          print("TRANSFORMERS_OFFLINE:", os.environ.get("TRANSFORMERS_OFFLINE"))
+          print("HF_DATASETS_OFFLINE:", os.environ.get("HF_DATASETS_OFFLINE"))
 
           from mlx_lm import load, generate
 
@@ -305,6 +326,7 @@ jobs:
           echo "=== FAILURE DIAGNOSTICS ==="
           python --version
           python -m pip list
+          env | sort
           python -m pytest tests --collect-only -vv || true
           find . -maxdepth 4 -type f | sort | sed -n '1,800p' || true
 

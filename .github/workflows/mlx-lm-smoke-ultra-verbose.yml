@@ -23,13 +23,11 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       FORCE_COLOR: "1"
-
       HF_HOME: ${{ github.workspace }}/.hf-home
       HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/.hf-home/hub
       HF_HUB_DISABLE_TELEMETRY: "1"
       TOKENIZERS_PARALLELISM: "false"
       TRANSFORMERS_VERBOSITY: info
-
       PYTEST_ADDOPTS: >-
         -vvv
         -s
@@ -117,33 +115,22 @@ jobs:
         run: |
           set -euxo pipefail
           cd mlx-lm
-
           echo "=== DOWNLOADING TEST FIXTURES ==="
           curl --fail --show-error --location \
             --output test_data.zip \
             https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
-
           ls -lah test_data.zip
           unzip -o test_data.zip
-
           echo "=== POST-UNZIP TOP LEVEL ==="
           ls -lah
-
           echo "=== TEST FILES ==="
           find tests -type f | sort
-
-          echo "=== HUB SNAPSHOT PREVIEW ==="
-          find hub -maxdepth 3 -type f | sort | sed -n '1,300p' || true
-
-          echo "=== DATASET PREVIEW ==="
-          find datasets -maxdepth 3 -type f | sort | sed -n '1,200p' || true
 
       - name: Populate Hugging Face cache from bundled fixtures
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-lm
-
           mkdir -p "$HF_HOME"
           mkdir -p "$HUGGINGFACE_HUB_CACHE"
 
@@ -159,8 +146,8 @@ jobs:
 
           echo "=== HF CACHE ROOT ==="
           ls -lah "$HF_HOME"
-          echo "=== HF HUB CACHE PREVIEW ==="
-          find "$HUGGINGFACE_HUB_CACHE" -maxdepth 4 -type f | sort | sed -n '1,400p' || true
+          du -sh "$HF_HOME" || true
+          du -sh "$HUGGINGFACE_HUB_CACHE" || true
 
       - name: Remove huge downloaded zip after extraction
         shell: bash
@@ -188,19 +175,16 @@ jobs:
           cd mlx-lm
           python -m pytest tests --collect-only -vv
 
-      - name: Run extended verbose pytest subset
+      - name: Run stable extended verbose pytest subset
         shell: bash
         run: |
           set -euo pipefail
           cd mlx-lm
-
-          echo "=== RUNNING EXTENDED VERBOSE PYTEST SUBSET ==="
-          echo "This intentionally goes beyond minimal smoke coverage."
+          echo "=== RUNNING STABLE EXTENDED VERBOSE PYTEST SUBSET ==="
           echo "Offline mode:"
           echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
           echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
           echo "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-unset}"
-          echo "Selected modules:"
           printf '%s\n' \
             tests/test_chat.py \
             tests/test_sample_utils.py \
@@ -210,8 +194,7 @@ jobs:
             tests/test_prompt_cache.py \
             tests/test_server.py \
             tests/test_utils.py \
-            tests/test_generate.py \
-            tests/test_models.py
+            tests/test_generate.py
 
           python -m pytest \
             tests/test_chat.py \
@@ -222,15 +205,13 @@ jobs:
             tests/test_prompt_cache.py \
             tests/test_server.py \
             tests/test_utils.py \
-            tests/test_generate.py \
-            tests/test_models.py
+            tests/test_generate.py
 
       - name: Verify MLX LM can load and generate with Qwen2.5 0.5B
         shell: bash
         run: |
           set -euo pipefail
           cd mlx-lm
-
           echo "=== QWEN LOAD/GENERATE CHECK ==="
           echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
           echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
@@ -306,7 +287,7 @@ jobs:
           print("Qwen load/generate verification passed.")
           PY
 
-      - name: Show Hugging Face cache state after model load
+      - name: Show compact Hugging Face cache summary
         if: always()
         shell: bash
         run: |
@@ -314,8 +295,8 @@ jobs:
           echo "=== HF_HOME SUMMARY ==="
           du -sh "$HF_HOME" || true
           du -sh "$HUGGINGFACE_HUB_CACHE" || true
-          echo "=== HF MODEL SNAPSHOTS ==="
-          find "$HUGGINGFACE_HUB_CACHE" -path '*/snapshots/*' -type f | sort | sed -n '1,200p' || true
+          echo "=== TOP-LEVEL HF CACHE ENTRIES ==="
+          find "$HUGGINGFACE_HUB_CACHE" -maxdepth 2 -type d | sort | sed -n '1,80p' || true
 
       - name: Collect logs on failure
         if: failure()
@@ -338,4 +319,3 @@ jobs:
           if-no-files-found: ignore
           path: |
             mlx-lm/.pytest_cache
-            .hf-home

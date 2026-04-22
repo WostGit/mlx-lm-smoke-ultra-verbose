@@ -1,0 +1,176 @@
+name: MLX LM Smoke Tests (Ultra Verbose)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlx-lm-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke tests on macOS
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      FORCE_COLOR: "1"
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TRANSFORMERS_VERBOSITY: info
+      TOKENIZERS_PARALLELISM: "false"
+      METAL_DEVICE_WRAPPER_TYPE: "1"
+      METAL_DEBUG_ERROR_MODE: "0"
+      PYTEST_ADDOPTS: >-
+        -vvv
+        -s
+        --full-trace
+        --tb=long
+        -rA
+        --durations=0
+        --maxfail=1
+        --showlocals
+        --color=yes
+        -o log_cli=true
+        -o log_cli_level=DEBUG
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Show runner and toolchain details
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          sw_vers
+          sysctl -n machdep.cpu.brand_string || true
+          xcodebuild -version || true
+          python --version
+          python -m pip --version
+          which python
+          which pip
+
+      - name: Upgrade packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install pytest pytest-xdist pytest-timeout unittest-xml-reporting
+          python -m pip install -e ".[test]"
+
+      - name: Download mlx-lm test fixtures
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl --fail --show-error --location \
+            --output test_data.zip \
+            https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
+          unzip -o test_data.zip
+          ls -lah
+          find . -maxdepth 3 -type f | sort | sed -n '1,250p'
+
+      - name: Show discovered test files
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -d tests ]; then
+            echo "=== tests directory ==="
+            find tests -type f | sort
+          else
+            echo "tests directory not found" >&2
+            exit 1
+          fi
+
+      - name: Run smoke tests ultra verbosely
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Strategy ==="
+          echo "1) Try pytest marker selection: -m smoke"
+          echo "2) If none collected, try name-based selection: -k smoke"
+          echo "3) If still none collected, run every *smoke*.py file"
+          echo
+
+          run_pytest() {
+            echo ">>> python -m pytest $*"
+            python -m pytest "$@"
+          }
+
+          set +e
+          run_pytest tests -m smoke
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "Smoke tests passed via pytest marker selection."
+            exit 0
+          fi
+
+          if [ "$rc" -eq 5 ]; then
+            echo "No marker-based smoke tests collected. Falling back to name-based selection."
+          else
+            echo "Marker-based smoke run failed with exit code: $rc"
+            exit "$rc"
+          fi
+
+          set +e
+          run_pytest tests -k "smoke or test_smoke or smoke_test"
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "Smoke tests passed via name-based selection."
+            exit 0
+          fi
+
+          if [ "$rc" -eq 5 ]; then
+            echo "No name-based smoke tests collected. Falling back to *smoke*.py file discovery."
+          else
+            echo "Name-based smoke run failed with exit code: $rc"
+            exit "$rc"
+          fi
+
+          mapfile -t smoke_files < <(find tests -type f \( -name '*smoke*.py' -o -name 'smoke_*.py' -o -name '*_smoke.py' \) | sort)
+
+          if [ "${#smoke_files[@]}" -eq 0 ]; then
+            echo "No smoke-marked tests, no smoke-named tests, and no smoke files found." >&2
+            exit 1
+          fi
+
+          printf 'Discovered smoke files:\n'
+          printf ' - %s\n' "${smoke_files[@]}"
+
+          run_pytest "${smoke_files[@]}"
+
+      - name: Upload pytest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-lm-smoke-logs
+          path: |
+            .pytest_cache
+            test_data.zip
+            .hf-home
+          if-no-files-found: ignore

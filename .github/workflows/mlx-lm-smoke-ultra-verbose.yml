@@ -10,30 +10,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-lm-smoke-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-lm-ultra-verbose-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   smoke:
-    name: Smoke tests on macOS
+    name: MLX LM ultra verbose regression on macOS
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     env:
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       FORCE_COLOR: "1"
+
       HF_HOME: ${{ github.workspace }}/.hf-home
+      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/.hf-home/hub
       HF_HUB_DISABLE_TELEMETRY: "1"
-      TRANSFORMERS_VERBOSITY: info
       TOKENIZERS_PARALLELISM: "false"
+      TRANSFORMERS_VERBOSITY: info
+
       PYTEST_ADDOPTS: >-
         -vvv
         -s
         --full-trace
         --tb=long
         -rA
-        --durations=25
+        --durations=50
         --maxfail=1
         --showlocals
         --color=yes
@@ -53,6 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          echo "=== RUNNER ==="
           uname -a
           sw_vers
           sysctl -n machdep.cpu.brand_string || true
@@ -63,23 +67,40 @@ jobs:
           which pip
           pwd
           ls -la
+          echo "=== ENV ==="
+          env | sort
 
-      - name: Clone MLX LM repository
+      - name: Show shell capabilities
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "BASH_VERSION=${BASH_VERSION:-unknown}"
+          bash --version
+          git --version
+          curl --version
+          unzip -v
+
+      - name: Clone upstream MLX LM repository
         shell: bash
         run: |
           set -euxo pipefail
           git clone --depth=1 https://github.com/ml-explore/mlx-lm.git
           cd mlx-lm
+          echo "=== GIT INFO ==="
           git rev-parse HEAD
           git status
+          git log -1 --stat
+          echo "=== TOP LEVEL ==="
           ls -la
-          find . -maxdepth 2 -type f | sort | sed -n '1,300p'
+          echo "=== FILE PREVIEW ==="
+          find . -maxdepth 2 -type f | sort | sed -n '1,400p'
 
       - name: Upgrade packaging tools
         shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip setuptools wheel
+          python -m pip --version
 
       - name: Install MLX LM and test dependencies
         shell: bash
@@ -88,115 +109,208 @@ jobs:
           cd mlx-lm
           python -m pip install pytest pytest-xdist pytest-timeout unittest-xml-reporting
           python -m pip install -e ".[test]"
+          echo "=== INSTALLED PACKAGES ==="
           python -m pip list
 
-      - name: Download MLX LM test fixtures
+      - name: Download upstream test fixtures
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-lm
+
+          echo "=== DOWNLOADING TEST FIXTURES ==="
           curl --fail --show-error --location \
             --output test_data.zip \
             https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
+
+          ls -lah test_data.zip
           unzip -o test_data.zip
+
+          echo "=== POST-UNZIP TOP LEVEL ==="
           ls -lah
+
+          echo "=== TEST FILES ==="
           find tests -type f | sort
 
-      - name: Run smoke tests ultra verbosely
+          echo "=== HUB SNAPSHOT PREVIEW ==="
+          find hub -maxdepth 3 -type f | sort | sed -n '1,300p' || true
+
+          echo "=== DATASET PREVIEW ==="
+          find datasets -maxdepth 3 -type f | sort | sed -n '1,200p' || true
+
+      - name: Populate Hugging Face cache from bundled fixtures
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-lm
+
+          mkdir -p "$HF_HOME"
+          mkdir -p "$HUGGINGFACE_HUB_CACHE"
+
+          if [ -d hub ]; then
+            rm -rf "$HUGGINGFACE_HUB_CACHE"
+            mkdir -p "$(dirname "$HUGGINGFACE_HUB_CACHE")"
+            cp -R hub "$HUGGINGFACE_HUB_CACHE"
+          fi
+
+          if [ -d datasets ]; then
+            cp -R datasets "$HF_HOME/" || true
+          fi
+
+          echo "=== HF CACHE ROOT ==="
+          ls -lah "$HF_HOME"
+          echo "=== HF HUB CACHE PREVIEW ==="
+          find "$HUGGINGFACE_HUB_CACHE" -maxdepth 4 -type f | sort | sed -n '1,400p' || true
+
+      - name: Remove huge downloaded zip after extraction
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-lm
+          rm -f test_data.zip
+          ls -lah
+
+      - name: Show collected tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-lm
+          python -m pytest tests --collect-only -vv
+
+      - name: Run extended verbose pytest subset
         shell: bash
         run: |
           set -euo pipefail
           cd mlx-lm
 
-          echo "=== Smoke selection strategy ==="
-          echo "1) Upstream pytest marker: -m smoke"
-          echo "2) Upstream name filter: -k smoke"
-          echo "3) Explicit portable fallback smoke suite"
-          echo
+          echo "=== RUNNING EXTENDED VERBOSE PYTEST SUBSET ==="
+          echo "This intentionally goes beyond minimal smoke coverage."
+          echo "Selected modules:"
+          printf '%s\n' \
+            tests/test_chat.py \
+            tests/test_sample_utils.py \
+            tests/test_tokenizers.py \
+            tests/test_tool_parsing.py \
+            tests/test_losses.py \
+            tests/test_prompt_cache.py \
+            tests/test_server.py \
+            tests/test_utils.py \
+            tests/test_generate.py \
+            tests/test_models.py
 
-          run_pytest() {
-            echo ">>> python -m pytest $*"
-            python -m pytest "$@"
-          }
+          python -m pytest \
+            tests/test_chat.py \
+            tests/test_sample_utils.py \
+            tests/test_tokenizers.py \
+            tests/test_tool_parsing.py \
+            tests/test_losses.py \
+            tests/test_prompt_cache.py \
+            tests/test_server.py \
+            tests/test_utils.py \
+            tests/test_generate.py \
+            tests/test_models.py
 
-          # Try real upstream smoke markers first.
-          set +e
-          run_pytest tests -m smoke
-          rc=$?
-          set -e
+      - name: Verify MLX LM can load and generate with Qwen2.5 0.5B
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd mlx-lm
 
-          if [ "$rc" -eq 0 ]; then
-            echo "Smoke tests passed via pytest marker selection."
-            exit 0
-          fi
+          echo "=== QWEN LOAD/GENERATE CHECK ==="
 
-          if [ "$rc" -ne 5 ]; then
-            echo "Marker-based smoke run failed with exit code: $rc"
-            exit "$rc"
-          fi
+          python - <<'PY'
+          import os
+          import sys
+          import traceback
 
-          echo "No marker-based smoke tests collected."
+          print("=== PYTHON RUNTIME INFO ===")
+          print("python:", sys.version)
+          print("cwd:", os.getcwd())
+          print("HF_HOME:", os.environ.get("HF_HOME"))
+          print("HUGGINGFACE_HUB_CACHE:", os.environ.get("HUGGINGFACE_HUB_CACHE"))
 
-          # Try name-based smoke selection.
-          set +e
-          run_pytest tests -k "smoke or test_smoke or smoke_test"
-          rc=$?
-          set -e
+          from mlx_lm import load, generate
 
-          if [ "$rc" -eq 0 ]; then
-            echo "Smoke tests passed via name-based selection."
-            exit 0
-          fi
+          model_id = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+          print(f"=== LOADING MODEL: {model_id} ===")
 
-          if [ "$rc" -ne 5 ]; then
-            echo "Name-based smoke run failed with exit code: $rc"
-            exit "$rc"
-          fi
+          try:
+              model, tokenizer = load(model_id)
+          except Exception as e:
+              print("MODEL LOAD FAILED")
+              traceback.print_exc()
+              raise
 
-          echo "No name-based smoke tests collected."
-          echo "Using explicit fallback smoke suite."
+          print("MODEL LOAD SUCCEEDED")
+          print("model type:", type(model))
+          print("tokenizer type:", type(tokenizer))
 
-          # Portable, explicit fallback suite:
-          # - fast
-          # - broad enough to catch major regressions
-          # - avoids bash-only mapfile and avoids guessing filenames dynamically
-          FALLBACK_SUITE="
-          tests/test_chat.py
-          tests/test_sample_utils.py
-          tests/test_tokenizers.py
-          tests/test_tool_parsing.py
-          tests/test_losses.py
-          tests/test_prompt_cache.py
-          tests/test_server.py
-          tests/test_utils.py
-          tests/test_generate.py
-          "
+          messages = [
+              {"role": "system", "content": "Be concise."},
+              {"role": "user", "content": "Reply with exactly: OK"}
+          ]
 
-          echo "=== Fallback smoke files ==="
-          printf '%s\n' "$FALLBACK_SUITE"
+          prompt = tokenizer.apply_chat_template(
+              messages,
+              add_generation_prompt=True,
+              tokenize=False,
+          )
 
-          for f in $FALLBACK_SUITE; do
-            if [ ! -f "$f" ]; then
-              echo "Missing expected fallback smoke file: $f" >&2
-              exit 1
-            fi
-          done
+          print("=== PROMPT ===")
+          print(prompt)
 
-          run_pytest $FALLBACK_SUITE
+          try:
+              output = generate(
+                  model,
+                  tokenizer,
+                  prompt=prompt,
+                  max_tokens=12,
+                  verbose=True,
+              )
+          except Exception:
+              print("GENERATION FAILED")
+              traceback.print_exc()
+              raise
 
-      - name: Show full test collection on failure
+          print("=== GENERATED TEXT BEGIN ===")
+          print(output)
+          print("=== GENERATED TEXT END ===")
+
+          if not isinstance(output, str):
+              raise RuntimeError(f"Expected string output, got: {type(output)}")
+
+          if not output.strip():
+              raise RuntimeError("Generation returned empty output")
+
+          print("Qwen load/generate verification passed.")
+          PY
+
+      - name: Show Hugging Face cache state after model load
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "=== HF_HOME TREE ==="
+          find "$HF_HOME" -maxdepth 5 -type f | sort | sed -n '1,500p' || true
+
+      - name: Collect logs on failure
         if: failure()
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-lm
+          echo "=== FAILURE DIAGNOSTICS ==="
+          python --version
+          python -m pip list
           python -m pytest tests --collect-only -vv || true
+          find . -maxdepth 4 -type f | sort | sed -n '1,800p' || true
 
       - name: Upload lightweight artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-lm-smoke-artifacts
+          name: mlx-lm-ultra-verbose-artifacts
           if-no-files-found: ignore
           path: |
             mlx-lm/.pytest_cache
+            .hf-home

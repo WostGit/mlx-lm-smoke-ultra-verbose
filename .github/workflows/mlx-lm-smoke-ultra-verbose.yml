@@ -236,7 +236,7 @@ jobs:
 
           try:
               model, tokenizer = load(model_id)
-          except Exception as e:
+          except Exception:
               print("MODEL LOAD FAILED")
               traceback.print_exc()
               raise

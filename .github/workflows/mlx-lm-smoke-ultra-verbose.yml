@@ -290,8 +290,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "=== HF_HOME TREE ==="
-          find "$HF_HOME" -maxdepth 5 -type f | sort | sed -n '1,500p' || true
+          echo "=== HF_HOME SUMMARY ==="
+          du -sh "$HF_HOME" || true
+          du -sh "$HUGGINGFACE_HUB_CACHE" || true
+          echo "=== HF MODEL SNAPSHOTS ==="
+          find "$HUGGINGFACE_HUB_CACHE" -path '*/snapshots/*' -type f | sort | sed -n '1,200p' || true
 
       - name: Collect logs on failure
         if: failure()

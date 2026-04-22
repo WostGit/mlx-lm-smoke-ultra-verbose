@@ -3,9 +3,7 @@ name: MLX LM Smoke Tests (Ultra Verbose)
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
 
 permissions:
@@ -19,7 +17,7 @@ jobs:
   smoke:
     name: Smoke tests on macOS
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -29,8 +27,6 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
       TRANSFORMERS_VERBOSITY: info
       TOKENIZERS_PARALLELISM: "false"
-      METAL_DEVICE_WRAPPER_TYPE: "1"
-      METAL_DEBUG_ERROR_MODE: "0"
       PYTEST_ADDOPTS: >-
         -vvv
         -s
@@ -45,7 +41,7 @@ jobs:
         -o log_cli_level=DEBUG
 
     steps:
-      - name: Check out repository
+      - name: Check out wrapper repository
         uses: actions/checkout@v5
 
       - name: Set up Python
@@ -53,7 +49,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Show runner and toolchain details
+      - name: Show runner details
         shell: bash
         run: |
           set -euxo pipefail
@@ -65,6 +61,27 @@ jobs:
           python -m pip --version
           which python
           which pip
+          pwd
+          ls -la
+
+      - name: Install system tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git --version
+          curl --version
+          unzip -v
+
+      - name: Clone MLX LM repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/ml-explore/mlx-lm.git
+          cd mlx-lm
+          git rev-parse HEAD
+          git status
+          ls -la
+          find . -maxdepth 2 -type f | sort | sed -n '1,300p'
 
       - name: Upgrade packaging tools
         shell: bash
@@ -72,28 +89,32 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip setuptools wheel
 
-      - name: Install test dependencies
+      - name: Install MLX LM test dependencies
         shell: bash
         run: |
           set -euxo pipefail
+          cd mlx-lm
           python -m pip install pytest pytest-xdist pytest-timeout unittest-xml-reporting
           python -m pip install -e ".[test]"
+          python -m pip list
 
-      - name: Download mlx-lm test fixtures
+      - name: Download MLX LM test fixtures
         shell: bash
         run: |
           set -euxo pipefail
+          cd mlx-lm
           curl --fail --show-error --location \
             --output test_data.zip \
             https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
           unzip -o test_data.zip
           ls -lah
-          find . -maxdepth 3 -type f | sort | sed -n '1,250p'
+          find . -maxdepth 3 -type f | sort | sed -n '1,400p'
 
-      - name: Show discovered test files
+      - name: Show test layout
         shell: bash
         run: |
           set -euxo pipefail
+          cd mlx-lm
           if [ -d tests ]; then
             echo "=== tests directory ==="
             find tests -type f | sort
@@ -106,11 +127,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd mlx-lm
 
-          echo "=== Strategy ==="
-          echo "1) Try pytest marker selection: -m smoke"
-          echo "2) If none collected, try name-based selection: -k smoke"
-          echo "3) If still none collected, run every *smoke*.py file"
+          echo "=== Smoke selection strategy ==="
+          echo "1) pytest marker: -m smoke"
+          echo "2) pytest name filter: -k smoke"
+          echo "3) explicit smoke-like files"
           echo
 
           run_pytest() {
@@ -124,12 +146,12 @@ jobs:
           set -e
 
           if [ "$rc" -eq 0 ]; then
-            echo "Smoke tests passed via pytest marker selection."
+            echo "Smoke tests passed via marker selection."
             exit 0
           fi
 
           if [ "$rc" -eq 5 ]; then
-            echo "No marker-based smoke tests collected. Falling back to name-based selection."
+            echo "No marker-based smoke tests collected."
           else
             echo "Marker-based smoke run failed with exit code: $rc"
             exit "$rc"
@@ -146,7 +168,7 @@ jobs:
           fi
 
           if [ "$rc" -eq 5 ]; then
-            echo "No name-based smoke tests collected. Falling back to *smoke*.py file discovery."
+            echo "No name-based smoke tests collected."
           else
             echo "Name-based smoke run failed with exit code: $rc"
             exit "$rc"
@@ -155,7 +177,9 @@ jobs:
           mapfile -t smoke_files < <(find tests -type f \( -name '*smoke*.py' -o -name 'smoke_*.py' -o -name '*_smoke.py' \) | sort)
 
           if [ "${#smoke_files[@]}" -eq 0 ]; then
-            echo "No smoke-marked tests, no smoke-named tests, and no smoke files found." >&2
+            echo "No smoke tests found by marker, name, or filename." >&2
+            echo "Falling back to collection-only output for debugging."
+            python -m pytest tests --collect-only -vv || true
             exit 1
           fi
 
@@ -164,13 +188,21 @@ jobs:
 
           run_pytest "${smoke_files[@]}"
 
-      - name: Upload pytest artifacts
+      - name: Always show collected tests on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-lm
+          python -m pytest tests --collect-only -vv || true
+
+      - name: Upload logs and repo state
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-lm-smoke-logs
-          path: |
-            .pytest_cache
-            test_data.zip
-            .hf-home
+          name: mlx-lm-smoke-artifacts
           if-no-files-found: ignore
+          path: |
+            mlx-lm/.pytest_cache
+            mlx-lm/test_data.zip
+            .hf-home

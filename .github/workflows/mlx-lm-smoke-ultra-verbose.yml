@@ -33,7 +33,7 @@ jobs:
         --full-trace
         --tb=long
         -rA
-        --durations=0
+        --durations=25
         --maxfail=1
         --showlocals
         --color=yes
@@ -64,19 +64,11 @@ jobs:
           pwd
           ls -la
 
-      - name: Install system tools
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git --version
-          curl --version
-          unzip -v
-
       - name: Clone MLX LM repository
         shell: bash
         run: |
           set -euxo pipefail
-          git clone https://github.com/ml-explore/mlx-lm.git
+          git clone --depth=1 https://github.com/ml-explore/mlx-lm.git
           cd mlx-lm
           git rev-parse HEAD
           git status
@@ -89,7 +81,7 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip setuptools wheel
 
-      - name: Install MLX LM test dependencies
+      - name: Install MLX LM and test dependencies
         shell: bash
         run: |
           set -euxo pipefail
@@ -108,20 +100,7 @@ jobs:
             https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
           unzip -o test_data.zip
           ls -lah
-          find . -maxdepth 3 -type f | sort | sed -n '1,400p'
-
-      - name: Show test layout
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-lm
-          if [ -d tests ]; then
-            echo "=== tests directory ==="
-            find tests -type f | sort
-          else
-            echo "tests directory not found" >&2
-            exit 1
-          fi
+          find tests -type f | sort
 
       - name: Run smoke tests ultra verbosely
         shell: bash
@@ -130,9 +109,9 @@ jobs:
           cd mlx-lm
 
           echo "=== Smoke selection strategy ==="
-          echo "1) pytest marker: -m smoke"
-          echo "2) pytest name filter: -k smoke"
-          echo "3) explicit smoke-like files"
+          echo "1) Upstream pytest marker: -m smoke"
+          echo "2) Upstream name filter: -k smoke"
+          echo "3) Explicit portable fallback smoke suite"
           echo
 
           run_pytest() {
@@ -140,23 +119,25 @@ jobs:
             python -m pytest "$@"
           }
 
+          # Try real upstream smoke markers first.
           set +e
           run_pytest tests -m smoke
           rc=$?
           set -e
 
           if [ "$rc" -eq 0 ]; then
-            echo "Smoke tests passed via marker selection."
+            echo "Smoke tests passed via pytest marker selection."
             exit 0
           fi
 
-          if [ "$rc" -eq 5 ]; then
-            echo "No marker-based smoke tests collected."
-          else
+          if [ "$rc" -ne 5 ]; then
             echo "Marker-based smoke run failed with exit code: $rc"
             exit "$rc"
           fi
 
+          echo "No marker-based smoke tests collected."
+
+          # Try name-based smoke selection.
           set +e
           run_pytest tests -k "smoke or test_smoke or smoke_test"
           rc=$?
@@ -167,28 +148,43 @@ jobs:
             exit 0
           fi
 
-          if [ "$rc" -eq 5 ]; then
-            echo "No name-based smoke tests collected."
-          else
+          if [ "$rc" -ne 5 ]; then
             echo "Name-based smoke run failed with exit code: $rc"
             exit "$rc"
           fi
 
-          mapfile -t smoke_files < <(find tests -type f \( -name '*smoke*.py' -o -name 'smoke_*.py' -o -name '*_smoke.py' \) | sort)
+          echo "No name-based smoke tests collected."
+          echo "Using explicit fallback smoke suite."
 
-          if [ "${#smoke_files[@]}" -eq 0 ]; then
-            echo "No smoke tests found by marker, name, or filename." >&2
-            echo "Falling back to collection-only output for debugging."
-            python -m pytest tests --collect-only -vv || true
-            exit 1
-          fi
+          # Portable, explicit fallback suite:
+          # - fast
+          # - broad enough to catch major regressions
+          # - avoids bash-only mapfile and avoids guessing filenames dynamically
+          FALLBACK_SUITE="
+          tests/test_chat.py
+          tests/test_sample_utils.py
+          tests/test_tokenizers.py
+          tests/test_tool_parsing.py
+          tests/test_losses.py
+          tests/test_prompt_cache.py
+          tests/test_server.py
+          tests/test_utils.py
+          tests/test_generate.py
+          "
 
-          printf 'Discovered smoke files:\n'
-          printf ' - %s\n' "${smoke_files[@]}"
+          echo "=== Fallback smoke files ==="
+          printf '%s\n' "$FALLBACK_SUITE"
 
-          run_pytest "${smoke_files[@]}"
+          for f in $FALLBACK_SUITE; do
+            if [ ! -f "$f" ]; then
+              echo "Missing expected fallback smoke file: $f" >&2
+              exit 1
+            fi
+          done
 
-      - name: Always show collected tests on failure
+          run_pytest $FALLBACK_SUITE
+
+      - name: Show full test collection on failure
         if: failure()
         shell: bash
         run: |
@@ -196,7 +192,7 @@ jobs:
           cd mlx-lm
           python -m pytest tests --collect-only -vv || true
 
-      - name: Upload logs and repo state
+      - name: Upload lightweight artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -204,5 +200,3 @@ jobs:
           if-no-files-found: ignore
           path: |
             mlx-lm/.pytest_cache
-            mlx-lm/test_data.zip
-            .hf-home

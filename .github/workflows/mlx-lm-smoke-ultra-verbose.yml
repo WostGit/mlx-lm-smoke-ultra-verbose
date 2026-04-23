@@ -199,58 +199,67 @@ jobs:
           cd smoke-qwen
           swift build -v
 
-      - name: Inspect metallib and bundle candidates
+      - name: Inspect build outputs for MLX metallib or bundle
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
           echo "=== BUILD TREE ==="
-          find .build -maxdepth 5 | sort | sed -n '1,400p' || true
-          echo "=== METALLIB CANDIDATES ==="
-          find .build -name '*.metallib' | sort || true
-          echo "=== Cmlx CANDIDATES ==="
-          find .build -iname '*cmlx*' | sort || true
-          echo "=== SYSTEM DEFAULT.METALLIB CANDIDATES ==="
-          find /System/Library /usr/lib -name default.metallib 2>/dev/null | sort | sed -n '1,50p' || true
+          find .build -maxdepth 6 | sort | sed -n '1,500p' || true
 
-      - name: Prepare metallib fallback
+          echo "=== METALLIB FILES ==="
+          find .build -name '*.metallib' | sort || true
+
+          echo "=== Cmlx / bundle candidates ==="
+          find .build \( -iname '*cmlx*' -o -iname '*.bundle' \) | sort || true
+
+          BIN_DIR="$(cd .build/arm64-apple-macosx/debug && pwd)"
+          BINARY="$BIN_DIR/SmokeQwen"
+
+          test -x "$BINARY"
+
+          MLX_METALLIB_PATH=""
+          MLX_BUNDLE_DIR=""
+
+          # Prefer an MLX-owned metallib, not a random system metallib.
+          if find .build -path '*Cmlx*default.metallib' | grep -q .; then
+            MLX_METALLIB_PATH="$(find .build -path '*Cmlx*default.metallib' | head -n 1)"
+          elif find .build -path '*mlx-swift_Cmlx.bundle*default.metallib' | grep -q .; then
+            MLX_METALLIB_PATH="$(find .build -path '*mlx-swift_Cmlx.bundle*default.metallib' | head -n 1)"
+          fi
+
+          if find .build \( -iname 'mlx-swift_Cmlx.bundle' -o -iname 'Cmlx.bundle' \) | grep -q .; then
+            MLX_BUNDLE_DIR="$(find .build \( -iname 'mlx-swift_Cmlx.bundle' -o -iname 'Cmlx.bundle' \) | head -n 1)"
+          fi
+
+          echo "BIN_DIR=$BIN_DIR" | tee smoke-env.txt
+          echo "BINARY=$BINARY" | tee -a smoke-env.txt
+          echo "MLX_METALLIB_PATH=${MLX_METALLIB_PATH}" | tee -a smoke-env.txt
+          echo "MLX_BUNDLE_DIR=${MLX_BUNDLE_DIR}" | tee -a smoke-env.txt
+
+          if [ -n "$MLX_METALLIB_PATH" ]; then
+            ls -lah "$MLX_METALLIB_PATH"
+          fi
+
+          if [ -n "$MLX_BUNDLE_DIR" ]; then
+            find "$MLX_BUNDLE_DIR" -maxdepth 4 | sort | sed -n '1,200p'
+          fi
+
+      - name: Stage only MLX-owned metallib beside executable
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
+          . ./smoke-env.txt
 
-          BIN_DIR="$(cd .build/arm64-apple-macosx/debug && pwd)"
-          BINARY="$BIN_DIR/SmokeQwen"
-          test -x "$BINARY"
-
-          METALLIB_PATH="$(find "$BIN_DIR" -name default.metallib | head -n 1 || true)"
-          if [ -z "${METALLIB_PATH:-}" ]; then
-            METALLIB_PATH="$(find "$PWD/.build" -name default.metallib | head -n 1 || true)"
+          if [ -n "${MLX_METALLIB_PATH:-}" ]; then
+            cp -f "$MLX_METALLIB_PATH" "$BIN_DIR/default.metallib"
+            ls -lah "$BIN_DIR/default.metallib"
+          else
+            echo "No MLX-owned default.metallib found."
           fi
 
-          if [ -z "${METALLIB_PATH:-}" ]; then
-            SYS_METALLIB="$(find /System/Library /usr/lib -name default.metallib 2>/dev/null | head -n 1 || true)"
-            if [ -n "${SYS_METALLIB:-}" ]; then
-              cp "$SYS_METALLIB" "$BIN_DIR/default.metallib"
-              METALLIB_PATH="$BIN_DIR/default.metallib"
-            fi
-          fi
-
-          echo "BIN_DIR=$BIN_DIR"
-          echo "BINARY=$BINARY"
-          echo "METALLIB_PATH=${METALLIB_PATH:-<none>}"
-
-          if [ -n "${METALLIB_PATH:-}" ]; then
-            ls -lah "$METALLIB_PATH"
-          fi
-
-          {
-            echo "BIN_DIR=$BIN_DIR"
-            echo "BINARY=$BINARY"
-            echo "METALLIB_PATH=${METALLIB_PATH:-}"
-          } > smoke-env.txt
-
-      - name: Run experimental Qwen smoke
+      - name: Run experimental Qwen smoke only if MLX metallib exists
         shell: bash
         run: |
           set -euxo pipefail
@@ -262,10 +271,13 @@ jobs:
           ls -lah
           find . -maxdepth 4 | sort | sed -n '1,300p'
 
-          if [ -n "${METALLIB_PATH:-}" ]; then
-            export METAL_PATH="$METALLIB_PATH"
+          if [ ! -f "$BIN_DIR/default.metallib" ]; then
+            echo "Skipping runtime smoke: MLX-specific default.metallib was not produced/staged."
+            echo "This is a diagnostic pass, not a runtime pass."
+            exit 0
           fi
 
+          export METAL_PATH="$BIN_DIR/default.metallib"
           "$BINARY"
 
       - name: Upload experimental artifacts

@@ -48,8 +48,27 @@ jobs:
           git clone --recursive https://github.com/ml-explore/mlx-swift.git
           cd mlx-swift
           git rev-parse HEAD
+          git status
+          git log -1 --stat
           git submodule status
+
+      - name: Verify required vendored sources exist
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift
+          test -f Package.swift
+          test -d Source/Cmlx/mlx
+          test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
+          echo "Required vendored sources are present."
+
+      - name: Show available schemes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift
+          xcodebuild -list
 
       - name: Run upstream package tests with xcodebuild
         shell: bash
@@ -174,45 +193,50 @@ jobs:
           cd smoke-qwen
           swift package resolve
 
-      - name: Show Xcode package schemes
+      - name: Build with SwiftPM
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          xcodebuild -list -packagePath .
+          swift build -v
 
-      - name: Build package executable with xcodebuild
+      - name: Show metallib candidates
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          xcodebuild \
-            -packagePath . \
-            -scheme SmokeQwen \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$PWD/DerivedData" \
-            build
+          find .build -name '*.metallib' -o -name 'default.metallib' | sort || true
+          find .build -path '*Cmlx*' | sort | sed -n '1,240p' || true
 
-      - name: Inspect built products
+      - name: Run from SwiftPM build directory with bundle hint
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          find "$PWD/DerivedData/Build/Products" -maxdepth 4 | sort | sed -n '1,240p'
 
-      - name: Run built executable from Xcode products directory
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          PRODUCT_DIR="$(find "$PWD/DerivedData/Build/Products" -type d -name Debug | head -n 1)"
-          test -n "$PRODUCT_DIR"
-          cd "$PRODUCT_DIR"
-          pwd
+          BIN_DIR="$(cd .build/arm64-apple-macosx/debug && pwd)"
+          BINARY="$BIN_DIR/SmokeQwen"
+
+          test -x "$BINARY"
+
+          METALLIB_PATH="$(find "$BIN_DIR" -name default.metallib | head -n 1 || true)"
+          if [ -z "${METALLIB_PATH:-}" ]; then
+            METALLIB_PATH="$(find "$PWD/.build" -name default.metallib | head -n 1 || true)"
+          fi
+
+          echo "BIN_DIR=$BIN_DIR"
+          echo "BINARY=$BINARY"
+          echo "METALLIB_PATH=${METALLIB_PATH:-<none>}"
+
+          cd "$BIN_DIR"
           ls -lah
-          find . -maxdepth 2 | sort | sed -n '1,240p'
-          ./SmokeQwen
+          find . -maxdepth 4 | sort | sed -n '1,240p'
+
+          if [ -n "${METALLIB_PATH:-}" ]; then
+            export METAL_PATH="$METALLIB_PATH"
+          fi
+
+          "$BINARY"
 
       - name: Upload experimental artifacts
         if: always()
@@ -221,4 +245,4 @@ jobs:
           name: mlx-swift-qwen-experimental-artifacts
           if-no-files-found: ignore
           path: |
-            smoke-qwen/DerivedData
+            smoke-qwen/.build

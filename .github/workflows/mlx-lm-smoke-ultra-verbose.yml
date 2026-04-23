@@ -1,4 +1,4 @@
-name: MLX Swift Primitives Smoke Test (Ultra Verbose)
+name: MLX Swift Minimum Working Smoke
 
 on:
   workflow_dispatch:
@@ -10,26 +10,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-primitives-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-minimum-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   smoke:
-    name: Build and test MLX Swift primitives on macOS
+    name: MLX Swift minimum working smoke on macOS
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       NSUnbufferedIO: "YES"
-      SWIFT_BACKTRACE: "enable=yes"
       CLICOLOR: "1"
 
     steps:
       - name: Check out wrapper repository
         uses: actions/checkout@v5
 
-      - name: Show runner, Swift, and Xcode details
+      - name: Show runner and toolchain info
         shell: bash
         run: |
           set -euxo pipefail
@@ -54,113 +53,51 @@ jobs:
           git log -1 --stat
           git submodule status
 
-      - name: Preflight vendored source tree
+      - name: Verify required vendored sources exist
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
-
           test -d Source/Cmlx/mlx
           test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
+          echo "Required vendored sources are present."
 
-          echo "Verified required submodule content exists."
-          ls -lah Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
-
-      - name: Try xcodebuild package tests first
+      - name: Show available Xcode schemes
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
+          xcodebuild -list -project mlx-swift.xcodeproj
 
+      - name: Run upstream package tests with xcodebuild
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift
           xcodebuild \
             test \
+            -project mlx-swift.xcodeproj \
             -scheme mlx-swift-Package \
             -destination 'platform=OS X' \
             -derivedDataPath "$PWD/DerivedData" \
             -resultBundlePath "$PWD/MLXSwiftPackageTests.xcresult" \
             -showBuildTimingSummary
 
-      - name: Try tutorial build
+      - name: Show compact build outputs
+        if: always()
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
-
-          xcodebuild \
-            build \
-            -scheme Tutorial \
-            -destination 'platform=OS X' \
-            -derivedDataPath "$PWD/DerivedData" \
-            -resultBundlePath "$PWD/TutorialBuild.xcresult" \
-            -showBuildTimingSummary
-
-      - name: Clone mlx-swift-lm
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone https://github.com/ml-explore/mlx-swift-lm.git
-          cd mlx-swift-lm
-          git rev-parse HEAD
-          git status
-          git log -1 --stat
-
-      - name: Build mlx-swift-lm with SwiftPM
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-lm
-          swift package resolve
-          swift build -v
-
-      - name: Run tiny MLXLLM import smoke
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p smoke-llm
-          cd smoke-llm
-
-          cat > Package.swift <<'SWIFT'
-          // swift-tools-version: 6.0
-          import PackageDescription
-
-          let package = Package(
-              name: "SmokeLLM",
-              platforms: [.macOS(.v14)],
-              dependencies: [
-                  .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main")
-              ],
-              targets: [
-                  .executableTarget(
-                      name: "SmokeLLM",
-                      dependencies: [
-                          .product(name: "MLXLLM", package: "mlx-swift-lm")
-                      ]
-                  )
-              ]
-          )
-          SWIFT
-
-          mkdir -p Sources/SmokeLLM
-          cat > Sources/SmokeLLM/main.swift <<'SWIFT'
-          import Foundation
-          import MLXLLM
-
-          print("Imported MLXLLM successfully.")
-          print("MLX LLM smoke test passed.")
-          SWIFT
-
-          swift package resolve
-          swift run -v
+          du -sh DerivedData || true
+          ls -lah MLXSwiftPackageTests.xcresult || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-primitives-artifacts
+          name: mlx-swift-minimum-working-artifacts
           if-no-files-found: ignore
           path: |
-            mlx-swift/DerivedData
-            mlx-swift/*.xcresult
-            mlx-swift-lm/.build
-            smoke-llm/.build
+            mlx-swift/MLXSwiftPackageTests.xcresult

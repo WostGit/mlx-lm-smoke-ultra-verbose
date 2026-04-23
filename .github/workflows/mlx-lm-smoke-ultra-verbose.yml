@@ -1,4 +1,4 @@
-name: MLX Swift Qwen2 Text-Only Smoke
+name: MLX Swift Qwen2 Text Smoke
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: MLX Swift Qwen2 text-only smoke on macOS
+    name: MLX Swift Qwen2 text smoke on macOS
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -64,7 +64,7 @@ jobs:
             -resultBundlePath "$PWD/MLXSwiftPackageTests.xcresult" \
             -showBuildTimingSummary
 
-      - name: Create text-only Qwen smoke package
+      - name: Create Qwen text-only smoke package
         shell: bash
         run: |
           set -euxo pipefail
@@ -79,15 +79,16 @@ jobs:
               name: "SmokeQwen",
               platforms: [.macOS(.v14)],
               dependencies: [
-                  .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.3"),
-                  .package(url: "https://github.com/ml-explore/swift-tokenizers-mlx", branch: "main"),
-                  .package(url: "https://github.com/ml-explore/swift-hf-api-mlx", branch: "main")
+                  .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMajor(from: "3.31.3")),
+                  .package(url: "https://github.com/DePasqualeOrg/swift-tokenizers-mlx", from: "0.2.0", traits: ["Swift"]),
+                  .package(url: "https://github.com/DePasqualeOrg/swift-hf-api-mlx", from: "0.2.0")
               ],
               targets: [
                   .executableTarget(
                       name: "SmokeQwen",
                       dependencies: [
                           .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                          .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                           .product(name: "MLXLMTokenizers", package: "swift-tokenizers-mlx"),
                           .product(name: "MLXLMHFAPI", package: "swift-hf-api-mlx")
                       ]
@@ -104,27 +105,49 @@ jobs:
           import MLXLMTokenizers
           import MLXLMHFAPI
 
-          print("Imported MLXLLM integrations successfully.")
-          print("About to resolve a Qwen2-family model identifier.")
-          print("Target model: mlx-community/Qwen2.5-0.5B-Instruct-4bit")
-          print("Text-only smoke package compiled and linked.")
+          @main
+          struct SmokeQwen {
+              static func main() async throws {
+                  print("Starting Qwen text-only smoke test.")
+                  print("About to load mlx-community/Qwen2.5-0.5B-Instruct-4bit")
+
+                  let model = try await loadModel(
+                      from: HubApi.default,
+                      using: TokenizersLoader(),
+                      id: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+                  )
+
+                  let session = ChatSession(model)
+                  let response = try await session.respond(to: "Reply with exactly OK")
+
+                  print("=== RESPONSE BEGIN ===")
+                  print(response)
+                  print("=== RESPONSE END ===")
+
+                  if response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                      throw NSError(domain: "SmokeQwen", code: 1, userInfo: [NSLocalizedDescriptionKey: "Empty response"])
+                  }
+
+                  print("Qwen text-only smoke test passed.")
+              }
+          }
           SWIFT
 
-      - name: Resolve text-only smoke package
+      - name: Resolve Qwen smoke package
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
           swift package resolve
 
-      - name: Build text-only smoke package
+      - name: Build Qwen smoke package
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
           swift build -v
 
-      - name: Run text-only smoke package
+      - name: Run Qwen smoke package
         shell: bash
         run: |
           set -euxo pipefail
@@ -135,7 +158,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-qwen2-text-only-artifacts
+          name: mlx-swift-qwen2-smoke-artifacts
           if-no-files-found: ignore
           path: |
             mlx-swift/MLXSwiftPackageTests.xcresult

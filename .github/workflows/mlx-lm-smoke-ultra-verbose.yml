@@ -58,17 +58,25 @@ jobs:
         run: |
           set -euxo pipefail
           cd mlx-swift
+          test -f Package.swift
           test -d Source/Cmlx/mlx
           test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
           echo "Required vendored sources are present."
 
-      - name: Show available Xcode schemes
+      - name: Show repo layout relevant to Xcode
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
-          xcodebuild -list -project mlx-swift.xcodeproj
+          find . -maxdepth 2 \( -name "*.xcodeproj" -o -name "*.xcworkspace" -o -name "Package.swift" \) | sort
+
+      - name: Show available schemes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift
+          xcodebuild -list
 
       - name: Run upstream package tests with xcodebuild
         shell: bash
@@ -77,9 +85,8 @@ jobs:
           cd mlx-swift
           xcodebuild \
             test \
-            -project mlx-swift.xcodeproj \
             -scheme mlx-swift-Package \
-            -destination 'platform=OS X' \
+            -destination 'platform=macOS' \
             -derivedDataPath "$PWD/DerivedData" \
             -resultBundlePath "$PWD/MLXSwiftPackageTests.xcresult" \
             -showBuildTimingSummary

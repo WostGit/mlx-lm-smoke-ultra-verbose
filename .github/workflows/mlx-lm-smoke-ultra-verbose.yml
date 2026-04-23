@@ -153,7 +153,7 @@ jobs:
               platforms: [.macOS(.v14)],
               dependencies: [
                   .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMajor(from: "3.31.3")),
-                  .package(url: "https://github.com/DePasqualeOrg/swift-tokenizers-mlx", from: "0.2.0", traits: ["Swift"]),
+                  .package(url: "https://github.com/DePasqualeOrg/swift-tokenizers-mlx", from: "0.2.0"),
                   .package(url: "https://github.com/DePasqualeOrg/swift-hf-api-mlx", from: "0.2.0")
               ],
               targets: [

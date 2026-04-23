@@ -38,7 +38,6 @@ jobs:
           xcode-select -p
           xcodebuild -version
           swift --version
-          clang --version || true
           pwd
           ls -la
 
@@ -49,27 +48,8 @@ jobs:
           git clone --recursive https://github.com/ml-explore/mlx-swift.git
           cd mlx-swift
           git rev-parse HEAD
-          git status
-          git log -1 --stat
           git submodule status
-
-      - name: Verify required vendored sources exist
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          test -f Package.swift
-          test -d Source/Cmlx/mlx
-          test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
-          echo "Required vendored sources are present."
-
-      - name: Show available schemes
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          xcodebuild -list
 
       - name: Run upstream package tests with xcodebuild
         shell: bash
@@ -158,10 +138,8 @@ jobs:
           mkdir -p Sources/SmokeQwen
           cat > Sources/SmokeQwen/main.swift <<'SWIFT'
           import Foundation
-
           import HuggingFace
           import Tokenizers
-
           import MLXLLM
           import MLXLMCommon
           import MLXHuggingFace
@@ -184,32 +162,57 @@ jobs:
                   print("=== RESPONSE BEGIN ===")
                   print(response)
                   print("=== RESPONSE END ===")
-
                   print("Experimental Qwen smoke test passed.")
               }
           }
           SWIFT
 
-      - name: Resolve experimental Qwen package
+      - name: Resolve package
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
           swift package resolve
 
-      - name: Build experimental Qwen package
+      - name: Show Xcode package schemes
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          swift build -v
+          xcodebuild -list -packagePath .
 
-      - name: Run experimental Qwen package
+      - name: Build package executable with xcodebuild
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          swift run -v
+          xcodebuild \
+            -packagePath . \
+            -scheme SmokeQwen \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$PWD/DerivedData" \
+            build
+
+      - name: Inspect built products
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          find "$PWD/DerivedData/Build/Products" -maxdepth 4 | sort | sed -n '1,240p'
+
+      - name: Run built executable from Xcode products directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          PRODUCT_DIR="$(find "$PWD/DerivedData/Build/Products" -type d -name Debug | head -n 1)"
+          test -n "$PRODUCT_DIR"
+          cd "$PRODUCT_DIR"
+          pwd
+          ls -lah
+          find . -maxdepth 2 | sort | sed -n '1,240p'
+          ./SmokeQwen
 
       - name: Upload experimental artifacts
         if: always()
@@ -218,4 +221,4 @@ jobs:
           name: mlx-swift-qwen-experimental-artifacts
           if-no-files-found: ignore
           path: |
-            smoke-qwen/.build
+            smoke-qwen/DerivedData

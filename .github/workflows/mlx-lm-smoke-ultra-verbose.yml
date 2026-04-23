@@ -52,7 +52,7 @@ jobs:
           git log -1 --stat
           git submodule status
 
-      - name: Verify required vendored sources exist
+      - name: Verify vendored MLX sources exist
         shell: bash
         run: |
           set -euxo pipefail
@@ -61,7 +61,6 @@ jobs:
           test -d Source/Cmlx/mlx
           test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
-          echo "Required vendored sources are present."
 
       - name: Show available schemes
         shell: bash
@@ -200,15 +199,21 @@ jobs:
           cd smoke-qwen
           swift build -v
 
-      - name: Show metallib candidates
+      - name: Inspect metallib and bundle candidates
         shell: bash
         run: |
           set -euxo pipefail
           cd smoke-qwen
-          find .build -name '*.metallib' -o -name 'default.metallib' | sort || true
-          find .build -path '*Cmlx*' | sort | sed -n '1,240p' || true
+          echo "=== BUILD TREE ==="
+          find .build -maxdepth 5 | sort | sed -n '1,400p' || true
+          echo "=== METALLIB CANDIDATES ==="
+          find .build -name '*.metallib' | sort || true
+          echo "=== Cmlx CANDIDATES ==="
+          find .build -iname '*cmlx*' | sort || true
+          echo "=== SYSTEM DEFAULT.METALLIB CANDIDATES ==="
+          find /System/Library /usr/lib -name default.metallib 2>/dev/null | sort | sed -n '1,50p' || true
 
-      - name: Run from SwiftPM build directory with bundle hint
+      - name: Prepare metallib fallback
         shell: bash
         run: |
           set -euxo pipefail
@@ -216,7 +221,6 @@ jobs:
 
           BIN_DIR="$(cd .build/arm64-apple-macosx/debug && pwd)"
           BINARY="$BIN_DIR/SmokeQwen"
-
           test -x "$BINARY"
 
           METALLIB_PATH="$(find "$BIN_DIR" -name default.metallib | head -n 1 || true)"
@@ -224,13 +228,39 @@ jobs:
             METALLIB_PATH="$(find "$PWD/.build" -name default.metallib | head -n 1 || true)"
           fi
 
+          if [ -z "${METALLIB_PATH:-}" ]; then
+            SYS_METALLIB="$(find /System/Library /usr/lib -name default.metallib 2>/dev/null | head -n 1 || true)"
+            if [ -n "${SYS_METALLIB:-}" ]; then
+              cp "$SYS_METALLIB" "$BIN_DIR/default.metallib"
+              METALLIB_PATH="$BIN_DIR/default.metallib"
+            fi
+          fi
+
           echo "BIN_DIR=$BIN_DIR"
           echo "BINARY=$BINARY"
           echo "METALLIB_PATH=${METALLIB_PATH:-<none>}"
 
+          if [ -n "${METALLIB_PATH:-}" ]; then
+            ls -lah "$METALLIB_PATH"
+          fi
+
+          {
+            echo "BIN_DIR=$BIN_DIR"
+            echo "BINARY=$BINARY"
+            echo "METALLIB_PATH=${METALLIB_PATH:-}"
+          } > smoke-env.txt
+
+      - name: Run experimental Qwen smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          . ./smoke-env.txt
+
           cd "$BIN_DIR"
+          pwd
           ls -lah
-          find . -maxdepth 4 | sort | sed -n '1,240p'
+          find . -maxdepth 4 | sort | sed -n '1,300p'
 
           if [ -n "${METALLIB_PATH:-}" ]; then
             export METAL_PATH="$METALLIB_PATH"
@@ -246,3 +276,4 @@ jobs:
           if-no-files-found: ignore
           path: |
             smoke-qwen/.build
+            smoke-qwen/smoke-env.txt

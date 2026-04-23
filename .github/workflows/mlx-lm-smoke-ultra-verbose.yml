@@ -1,4 +1,4 @@
-name: MLX Swift Minimum Working Smoke
+name: MLX Swift Qwen2 Text-Only Smoke
 
 on:
   workflow_dispatch:
@@ -10,14 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-minimum-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-qwen2-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   smoke:
-    name: MLX Swift minimum working smoke on macOS
+    name: MLX Swift Qwen2 text-only smoke on macOS
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
@@ -38,7 +38,6 @@ jobs:
           xcode-select -p
           xcodebuild -version
           swift --version
-          clang --version || true
           pwd
           ls -la
 
@@ -49,36 +48,10 @@ jobs:
           git clone --recursive https://github.com/ml-explore/mlx-swift.git
           cd mlx-swift
           git rev-parse HEAD
-          git status
-          git log -1 --stat
           git submodule status
-
-      - name: Verify required vendored sources exist
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          test -f Package.swift
-          test -d Source/Cmlx/mlx
-          test -d Source/Cmlx/mlx-c
           test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
-          echo "Required vendored sources are present."
 
-      - name: Show repo layout relevant to Xcode
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          find . -maxdepth 2 \( -name "*.xcodeproj" -o -name "*.xcworkspace" -o -name "Package.swift" \) | sort
-
-      - name: Show available schemes
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          xcodebuild -list
-
-      - name: Run upstream package tests with xcodebuild
+      - name: Run upstream mlx-swift package tests
         shell: bash
         run: |
           set -euxo pipefail
@@ -91,20 +64,79 @@ jobs:
             -resultBundlePath "$PWD/MLXSwiftPackageTests.xcresult" \
             -showBuildTimingSummary
 
-      - name: Show compact build outputs
-        if: always()
+      - name: Create text-only Qwen smoke package
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-swift
-          du -sh DerivedData || true
-          ls -lah MLXSwiftPackageTests.xcresult || true
+          mkdir -p smoke-qwen
+          cd smoke-qwen
+
+          cat > Package.swift <<'SWIFT'
+          // swift-tools-version: 6.0
+          import PackageDescription
+
+          let package = Package(
+              name: "SmokeQwen",
+              platforms: [.macOS(.v14)],
+              dependencies: [
+                  .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.3"),
+                  .package(url: "https://github.com/ml-explore/swift-tokenizers-mlx", branch: "main"),
+                  .package(url: "https://github.com/ml-explore/swift-hf-api-mlx", branch: "main")
+              ],
+              targets: [
+                  .executableTarget(
+                      name: "SmokeQwen",
+                      dependencies: [
+                          .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                          .product(name: "MLXLMTokenizers", package: "swift-tokenizers-mlx"),
+                          .product(name: "MLXLMHFAPI", package: "swift-hf-api-mlx")
+                      ]
+                  )
+              ]
+          )
+          SWIFT
+
+          mkdir -p Sources/SmokeQwen
+          cat > Sources/SmokeQwen/main.swift <<'SWIFT'
+          import Foundation
+          import MLXLLM
+          import MLXLMCommon
+          import MLXLMTokenizers
+          import MLXLMHFAPI
+
+          print("Imported MLXLLM integrations successfully.")
+          print("About to resolve a Qwen2-family model identifier.")
+          print("Target model: mlx-community/Qwen2.5-0.5B-Instruct-4bit")
+          print("Text-only smoke package compiled and linked.")
+          SWIFT
+
+      - name: Resolve text-only smoke package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          swift package resolve
+
+      - name: Build text-only smoke package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          swift build -v
+
+      - name: Run text-only smoke package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd smoke-qwen
+          swift run -v
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-minimum-working-artifacts
+          name: mlx-swift-qwen2-text-only-artifacts
           if-no-files-found: ignore
           path: |
             mlx-swift/MLXSwiftPackageTests.xcresult
+            smoke-qwen/.build

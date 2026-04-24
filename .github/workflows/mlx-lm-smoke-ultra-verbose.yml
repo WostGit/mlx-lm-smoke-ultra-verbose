@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   qwen-smoke:
-    name: Build and run Qwen2.5 0.5B via llm-tool on macOS
+    name: Run Qwen2.5 0.5B via mlx-run on macOS
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -60,8 +60,7 @@ jobs:
           git rev-parse HEAD
           git status
           git log -1 --stat
-          ls -la
-          test -f mlx-run
+          test -x mlx-run
           test -d Tools/llm-tool
 
       - name: Show available schemes
@@ -71,55 +70,21 @@ jobs:
           cd mlx-swift-examples
           xcodebuild -list
 
-      - name: Build llm-tool with xcodebuild
+      - name: Show llm-tool help through mlx-run
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
-          xcodebuild \
-            -scheme llm-tool \
-            -destination 'platform=macOS' \
-            -configuration Debug \
-            -derivedDataPath "$PWD/DerivedData" \
-            -showBuildTimingSummary \
-            build
+          ./mlx-run llm-tool --help | sed -n '1,240p'
 
-      - name: Inspect build products and MLX bundle
+      - name: Run Qwen2.5 0.5B smoke through mlx-run
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
 
-          echo "=== DerivedData products ==="
-          find "$PWD/DerivedData/Build/Products" -maxdepth 4 | sort | sed -n '1,400p'
-
-          echo "=== llm-tool candidates ==="
-          find "$PWD/DerivedData/Build/Products" -type f -name 'llm-tool' | sort
-
-          echo "=== mlx-swift_Cmlx.bundle candidates ==="
-          find "$PWD/DerivedData/Build/Products" -type d -name 'mlx-swift_Cmlx.bundle' | sort || true
-
-          echo "=== default.metallib candidates ==="
-          find "$PWD/DerivedData/Build/Products" -type f -name 'default.metallib' | sort || true
-
-          test -x "$PWD/DerivedData/Build/Products/Debug/llm-tool"
-          test -d "$PWD/DerivedData/Build/Products/Debug/mlx-swift_Cmlx.bundle"
-          test -f "$PWD/DerivedData/Build/Products/Debug/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
-
-      - name: Show llm-tool help
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-          ./mlx-run --debug llm-tool --help | sed -n '1,240p'
-
-      - name: Run Qwen2.5 0.5B smoke
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-
-          ./mlx-run --debug llm-tool \
+          ./mlx-run llm-tool \
+            generate \
             --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
             --prompt "Reply with exactly OK" \
             --max-tokens 8 \
@@ -132,7 +97,7 @@ jobs:
           cd mlx-swift-examples
           grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log
 
-      - name: Show Hugging Face cache summary
+      - name: Show cache summary
         if: always()
         shell: bash
         run: |
@@ -148,5 +113,4 @@ jobs:
           if-no-files-found: ignore
           path: |
             mlx-swift-examples/qwen-smoke.log
-            mlx-swift-examples/DerivedData
             .hf-home

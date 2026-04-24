@@ -1,34 +1,35 @@
-name: MLX Swift Fixed CI
+name: MLX Swift Self Contained Test
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-fixed-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-self-contained-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  required-mlx-swift-smoke:
-    name: Required MLX Swift package smoke on macOS
+  test-mlx-swift:
+    name: Test mlx-swift on macOS
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       NSUnbufferedIO: "YES"
       CLICOLOR: "1"
+      FORCE_COLOR: "1"
 
     steps:
-      - name: Checkout
+      - name: Checkout wrapper repo
         uses: actions/checkout@v5
 
-      - name: Show toolchain
+      - name: Show host details
         shell: bash
         run: |
           set -euxo pipefail
@@ -37,128 +38,49 @@ jobs:
           xcode-select -p
           xcodebuild -version
           swift --version
+          sysctl -n machdep.cpu.brand_string || true
 
-      - name: Clone mlx-swift
+      - name: Fresh clone mlx-swift
         shell: bash
         run: |
           set -euxo pipefail
-          git clone --recursive https://github.com/ml-explore/mlx-swift.git
+          rm -rf mlx-swift
+          git clone https://github.com/ml-explore/mlx-swift.git
           cd mlx-swift
           git rev-parse HEAD
-          test -f Package.swift
+          git submodule update --init --recursive
+          git status
           ls -la
+          find . -maxdepth 2 -type f | sort | sed -n '1,250p'
 
-      - name: Resolve packages
+      - name: Show available Xcode schemes
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
-          swift package resolve
+          xcodebuild -list | tee xcodebuild-list.log
 
-      - name: Build
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          swift build -v 2>&1 | tee swift-build.log
-
-      - name: Test
+      - name: Run mlx-swift package tests
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift
           xcodebuild \
-            -scheme MLXSwiftPackageTests \
-            -destination 'platform=macOS,arch=arm64' \
             test \
+            -scheme mlx-swift-Package \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             | tee xcodebuild-tests.log
 
-      - name: Upload required artifacts
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-required-smoke-artifacts
+          name: mlx-swift-self-contained-logs
           if-no-files-found: ignore
           path: |
-            mlx-swift/swift-build.log
+            mlx-swift/xcodebuild-list.log
             mlx-swift/xcodebuild-tests.log
-
-  optional-llm-tool-diagnostic:
-    name: Optional llm-tool diagnostic
-    runs-on: macos-15
-    timeout-minutes: 60
-    continue-on-error: true
-
-    env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      NSUnbufferedIO: "YES"
-      CLICOLOR: "1"
-      HF_HOME: ${{ github.workspace }}/.hf-home
-      XDG_CACHE_HOME: ${{ github.workspace }}/.cache
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Prepare caches
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
-
-      - name: Clone mlx-swift-examples
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --recursive https://github.com/ml-explore/mlx-swift-examples.git
-          cd mlx-swift-examples
-          git rev-parse HEAD
-          test -x mlx-run
-
-      - name: List schemes
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-          xcodebuild -list | tee xcodebuild-list.log || true
-
-      - name: Try llm-tool help through mlx-run
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-          ./mlx-run --debug llm-tool --help 2>&1 | tee llm-tool-help.log || true
-
-      - name: Try Qwen smoke through mlx-run
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-          ./mlx-run --debug llm-tool generate \
-            --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
-            --prompt "Reply with exactly OK" \
-            --max-tokens 8 \
-            2>&1 | tee qwen-smoke.log || true
-
-      - name: Summarize diagnostic result
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-          if grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log >/dev/null 2>&1; then
-            echo "Experimental Qwen smoke succeeded."
-          else
-            echo "Experimental Qwen smoke did not complete successfully."
-            echo "This is diagnostic only."
-          fi
-
-      - name: Upload diagnostic artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlx-swift-llm-tool-diagnostic-artifacts
-          if-no-files-found: ignore
-          path: |
-            mlx-swift-examples/xcodebuild-list.log
-            mlx-swift-examples/llm-tool-help.log
-            mlx-swift-examples/qwen-smoke.log
+            mlx-swift/DerivedData/Logs/Test/*.xcresult

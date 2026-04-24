@@ -1,4 +1,4 @@
-name: MLX Swift Minimum Working Smoke
+name: MLX Swift Qwen2.5 0.5B Working Smoke
 
 on:
   workflow_dispatch:
@@ -10,19 +10,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-minimum-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-qwen-working-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  minimum-working-smoke:
-    name: Proven MLX Swift smoke on macOS
+  qwen-smoke:
+    name: Build and run Qwen2.5 0.5B via llm-tool on macOS
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       NSUnbufferedIO: "YES"
       CLICOLOR: "1"
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      XDG_CACHE_HOME: ${{ github.workspace }}/.cache
 
     steps:
       - name: Check out wrapper repository
@@ -41,74 +43,13 @@ jobs:
           pwd
           ls -la
 
-      - name: Clone mlx-swift
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --recursive https://github.com/ml-explore/mlx-swift.git
-          cd mlx-swift
-          git rev-parse HEAD
-          git status
-          ls -la
-          test -f Package.swift
-
-      - name: Resolve package dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          swift package resolve
-
-      - name: Build MLX Swift
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          swift build -v 2>&1 | tee swift-build.log
-
-      - name: Run MLX Swift tests
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          xcodebuild \
-            -scheme MLXSwiftPackageTests \
-            -destination 'platform=macOS,arch=arm64' \
-            test \
-            | tee xcodebuild-tests.log
-
-      - name: Upload minimum-working artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlx-swift-minimum-working-artifacts
-          if-no-files-found: ignore
-          path: |
-            mlx-swift/swift-build.log
-            mlx-swift/xcodebuild-tests.log
-
-  experimental-qwen-text-smoke:
-    name: Experimental Qwen text smoke
-    runs-on: macos-15
-    timeout-minutes: 90
-    continue-on-error: true
-
-    env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      NSUnbufferedIO: "YES"
-      CLICOLOR: "1"
-      HF_HOME: ${{ github.workspace }}/.hf-home
-      XDG_CACHE_HOME: ${{ github.workspace }}/.cache
-
-    steps:
-      - name: Check out wrapper repository
-        uses: actions/checkout@v5
-
-      - name: Prepare caches
+      - name: Prepare cache directories
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
+          du -sh "$HF_HOME" || true
+          du -sh "$XDG_CACHE_HOME" || true
 
       - name: Clone mlx-swift-examples
         shell: bash
@@ -117,45 +58,87 @@ jobs:
           git clone --recursive https://github.com/ml-explore/mlx-swift-examples.git
           cd mlx-swift-examples
           git rev-parse HEAD
+          git status
+          git log -1 --stat
           test -x mlx-run
 
-      - name: Show repo help
+      - name: Show available schemes
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
-          ./mlx-run --list || true
-          ./mlx-run --debug llm-tool --help || true
+          xcodebuild -list | tee xcodebuild-list.log
 
-      - name: Diagnostic Qwen run attempt
+      - name: Build llm-tool in Debug
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
-          ./mlx-run --debug llm-tool generate \
+          rm -rf DerivedData
+          xcodebuild \
+            -scheme llm-tool \
+            -destination 'platform=macOS,arch=arm64' \
+            -configuration Debug \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build \
+            | tee xcodebuild-debug.log
+
+      - name: Verify built llm-tool exists
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          echo "=== DerivedData products ==="
+          find DerivedData/Build/Products -maxdepth 3 | sort | tee built-products.txt
+          test -x DerivedData/Build/Products/Debug/llm-tool
+          file DerivedData/Build/Products/Debug/llm-tool
+
+      - name: Show llm-tool help
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          ./mlx-run --debug llm-tool --help | sed -n '1,240p' | tee llm-tool-help.log
+
+      - name: Run Qwen2.5 0.5B smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          ./mlx-run --debug llm-tool \
+            generate \
             --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
             --prompt "Reply with exactly OK" \
             --max-tokens 8 \
-            2>&1 | tee qwen-smoke.log || true
+            2>&1 | tee qwen-smoke.log
 
-      - name: Summarize diagnostic result
+      - name: Assert response contains OK
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
-          if grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log >/dev/null 2>&1; then
-            echo "Qwen runtime smoke succeeded."
-          else
-            echo "Qwen runtime smoke did not complete successfully."
-            echo "This job is diagnostic-only and does not block the workflow."
-          fi
+          grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log
 
-      - name: Upload experimental artifacts
+      - name: Show cache summary
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          du -sh "$HF_HOME" || true
+          find "$HF_HOME" -maxdepth 4 | sort | sed -n '1,300p' || true
+
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-qwen-experimental-artifacts
+          name: mlx-swift-qwen-working-smoke-artifacts
           if-no-files-found: ignore
           path: |
+            mlx-swift-examples/xcodebuild-list.log
+            mlx-swift-examples/xcodebuild-debug.log
+            mlx-swift-examples/built-products.txt
+            mlx-swift-examples/llm-tool-help.log
             mlx-swift-examples/qwen-smoke.log
             .hf-home

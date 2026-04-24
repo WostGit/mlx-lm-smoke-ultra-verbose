@@ -1,4 +1,4 @@
-name: MLX Swift Self Contained Test
+name: MLX Swift End-to-End Qwen Smoke
 
 on:
   workflow_dispatch:
@@ -10,26 +10,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-self-contained-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-e2e-qwen-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-mlx-swift:
-    name: Test mlx-swift on macOS
+  qwen-e2e:
+    name: Build and run Qwen2.5 0.5B via llm-tool on macOS
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       NSUnbufferedIO: "YES"
+      PYTHONUNBUFFERED: "1"
       CLICOLOR: "1"
       FORCE_COLOR: "1"
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      HF_HUB_DISABLE_TELEMETRY: "1"
 
     steps:
       - name: Checkout wrapper repo
         uses: actions/checkout@v5
 
-      - name: Show host details
+      - name: Show host environment
         shell: bash
         run: |
           set -euxo pipefail
@@ -40,47 +43,124 @@ jobs:
           swift --version
           sysctl -n machdep.cpu.brand_string || true
 
-      - name: Fresh clone mlx-swift
+      - name: Fresh clone mlx-swift-examples
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf mlx-swift
-          git clone https://github.com/ml-explore/mlx-swift.git
-          cd mlx-swift
+          rm -rf mlx-swift-examples
+          git clone https://github.com/ml-explore/mlx-swift-examples.git
+          cd mlx-swift-examples
           git rev-parse HEAD
           git submodule update --init --recursive
-          git status
           ls -la
           find . -maxdepth 2 -type f | sort | sed -n '1,250p'
 
-      - name: Show available Xcode schemes
+      - name: Show repo guidance and wrapper
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-swift
+          cd mlx-swift-examples
+          echo "=== llm-tool README excerpt ==="
+          sed -n '1,220p' Tools/llm-tool/README.md || true
+          echo "=== mlx-run script ==="
+          sed -n '1,220p' mlx-run || true
+
+      - name: List Xcode schemes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
           xcodebuild -list | tee xcodebuild-list.log
 
-      - name: Run mlx-swift package tests
+      - name: Resolve package dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-swift
+          cd mlx-swift-examples
+          rm -rf DerivedData
           xcodebuild \
-            test \
-            -scheme mlx-swift-Package \
+            -resolvePackageDependencies \
+            -scheme llm-tool \
+            -clonedSourcePackagesDirPath "$PWD/SourcePackages" \
+            | tee xcodebuild-resolve.log
+
+      - name: Build llm-tool (Debug)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          xcodebuild \
+            -scheme llm-tool \
+            -configuration Debug \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
+            -clonedSourcePackagesDirPath "$PWD/SourcePackages" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            | tee xcodebuild-tests.log
+            build \
+            | tee xcodebuild-build.log
 
-      - name: Upload logs
+      - name: Prove built binary exists
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+
+          BUILT_PRODUCTS_DIR="$(
+            xcodebuild \
+              -scheme llm-tool \
+              -configuration Debug \
+              -destination 'platform=macOS,arch=arm64' \
+              -derivedDataPath DerivedData \
+              -showBuildSettings \
+            | awk -F ' = ' '/BUILT_PRODUCTS_DIR = / {print $2; exit}'
+          )"
+
+          echo "BUILT_PRODUCTS_DIR=$BUILT_PRODUCTS_DIR"
+          test -n "$BUILT_PRODUCTS_DIR"
+          ls -lah "$BUILT_PRODUCTS_DIR" || true
+
+          if [ -x "$BUILT_PRODUCTS_DIR/llm-tool" ]; then
+            echo "Found executable llm-tool"
+            "$BUILT_PRODUCTS_DIR/llm-tool" --help | sed -n '1,200p'
+          elif [ -x "$BUILT_PRODUCTS_DIR/llm-tool.app/Contents/MacOS/llm-tool" ]; then
+            echo "Found app-wrapped llm-tool"
+            "$BUILT_PRODUCTS_DIR/llm-tool.app/Contents/MacOS/llm-tool" --help | sed -n '1,200p'
+          else
+            echo "Expected llm-tool binary was not produced."
+            find DerivedData -name llm-tool -o -name 'llm-tool.app' | sed -n '1,200p' || true
+            exit 1
+          fi
+
+      - name: Run end-to-end Qwen smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+
+          ./mlx-run --debug llm-tool generate \
+            --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
+            --prompt 'Reply with exactly OK' \
+            --max-tokens 8 \
+            | tee qwen-smoke.log
+
+      - name: Assert model responded with OK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log
+
+      - name: Upload logs and result bundles
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-self-contained-logs
+          name: mlx-swift-e2e-qwen-logs
           if-no-files-found: ignore
           path: |
-            mlx-swift/xcodebuild-list.log
-            mlx-swift/xcodebuild-tests.log
-            mlx-swift/DerivedData/Logs/Test/*.xcresult
+            mlx-swift-examples/xcodebuild-list.log
+            mlx-swift-examples/xcodebuild-resolve.log
+            mlx-swift-examples/xcodebuild-build.log
+            mlx-swift-examples/qwen-smoke.log
+            mlx-swift-examples/DerivedData/Logs/**/*.xcresult
+            mlx-swift-examples/DerivedData/Build/**/*.xcactivitylog

@@ -70,20 +70,39 @@ jobs:
           cd mlx-swift-examples
           xcodebuild -list
 
-      - name: Show llm-tool help through mlx-run
+      - name: Build llm-tool in Debug first
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
-          ./mlx-run llm-tool --help | sed -n '1,240p'
+          xcodebuild \
+            -scheme llm-tool \
+            -destination 'platform=macOS,arch=arm64' \
+            -configuration Debug \
+            build \
+            | tee xcodebuild-debug.log
 
-      - name: Run Qwen2.5 0.5B smoke through mlx-run
+      - name: Verify Debug binary exists
         shell: bash
         run: |
           set -euxo pipefail
           cd mlx-swift-examples
+          find ~/Library/Developer/Xcode/DerivedData -path '*/Build/Products/Debug/llm-tool' -type f | sort | tee llm-tool-paths.txt
+          grep 'llm-tool' llm-tool-paths.txt
 
-          ./mlx-run llm-tool \
+      - name: Show llm-tool help through mlx-run Debug
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          ./mlx-run --debug llm-tool --help | sed -n '1,240p'
+
+      - name: Run Qwen2.5 0.5B smoke through mlx-run Debug
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          ./mlx-run --debug llm-tool \
             generate \
             --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
             --prompt "Reply with exactly OK" \
@@ -113,4 +132,6 @@ jobs:
           if-no-files-found: ignore
           path: |
             mlx-swift-examples/qwen-smoke.log
+            mlx-swift-examples/xcodebuild-debug.log
+            mlx-swift-examples/llm-tool-paths.txt
             .hf-home

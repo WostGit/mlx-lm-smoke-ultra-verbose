@@ -1,4 +1,4 @@
-name: MLX Swift Minimum Working Smoke
+name: MLX Swift Qwen2.5 0.5B Working Smoke
 
 on:
   workflow_dispatch:
@@ -10,19 +10,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-swift-minimum-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-qwen-working-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  core-smoke:
-    name: MLX Swift minimum working smoke on macOS
+  qwen-smoke:
+    name: Build and run Qwen2.5 0.5B via llm-tool on macOS
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       NSUnbufferedIO: "YES"
       CLICOLOR: "1"
+      HF_HOME: ${{ github.workspace }}/.hf-home
+      XDG_CACHE_HOME: ${{ github.workspace }}/.cache
 
     steps:
       - name: Check out wrapper repository
@@ -41,251 +43,110 @@ jobs:
           pwd
           ls -la
 
-      - name: Clone mlx-swift with submodules
+      - name: Prepare cache directories
         shell: bash
         run: |
           set -euxo pipefail
-          git clone --recursive https://github.com/ml-explore/mlx-swift.git
-          cd mlx-swift
+          mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
+          du -sh "$HF_HOME" || true
+          du -sh "$XDG_CACHE_HOME" || true
+
+      - name: Clone mlx-swift-examples
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --recursive https://github.com/ml-explore/mlx-swift-examples.git
+          cd mlx-swift-examples
           git rev-parse HEAD
           git status
           git log -1 --stat
-          git submodule status
-
-      - name: Verify vendored MLX sources exist
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-swift
-          test -f Package.swift
-          test -d Source/Cmlx/mlx
-          test -d Source/Cmlx/mlx-c
-          test -f Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp
+          ls -la
+          test -f mlx-run
+          test -d Tools/llm-tool
 
       - name: Show available schemes
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-swift
+          cd mlx-swift-examples
           xcodebuild -list
 
-      - name: Run upstream package tests with xcodebuild
+      - name: Build llm-tool with xcodebuild
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-swift
+          cd mlx-swift-examples
           xcodebuild \
-            test \
-            -scheme mlx-swift-Package \
+            -scheme llm-tool \
             -destination 'platform=macOS' \
+            -configuration Debug \
             -derivedDataPath "$PWD/DerivedData" \
-            -resultBundlePath "$PWD/MLXSwiftPackageTests.xcresult" \
-            -showBuildTimingSummary
+            -showBuildTimingSummary \
+            build
 
-      - name: Upload core artifacts
+      - name: Inspect build products and MLX bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+
+          echo "=== DerivedData products ==="
+          find "$PWD/DerivedData/Build/Products" -maxdepth 4 | sort | sed -n '1,400p'
+
+          echo "=== llm-tool candidates ==="
+          find "$PWD/DerivedData/Build/Products" -type f -name 'llm-tool' | sort
+
+          echo "=== mlx-swift_Cmlx.bundle candidates ==="
+          find "$PWD/DerivedData/Build/Products" -type d -name 'mlx-swift_Cmlx.bundle' | sort || true
+
+          echo "=== default.metallib candidates ==="
+          find "$PWD/DerivedData/Build/Products" -type f -name 'default.metallib' | sort || true
+
+          test -x "$PWD/DerivedData/Build/Products/Debug/llm-tool"
+          test -d "$PWD/DerivedData/Build/Products/Debug/mlx-swift_Cmlx.bundle"
+          test -f "$PWD/DerivedData/Build/Products/Debug/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+
+      - name: Show llm-tool help
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          ./mlx-run --debug llm-tool --help | sed -n '1,240p'
+
+      - name: Run Qwen2.5 0.5B smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+
+          ./mlx-run --debug llm-tool \
+            --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
+            --prompt "Reply with exactly OK" \
+            --max-tokens 8 \
+            2>&1 | tee qwen-smoke.log
+
+      - name: Assert response contains OK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          grep -E '(^|[^A-Z])OK([^A-Z]|$)' qwen-smoke.log
+
+      - name: Show Hugging Face cache summary
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          du -sh "$HF_HOME" || true
+          find "$HF_HOME" -maxdepth 4 | sort | sed -n '1,300p' || true
+
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-minimum-working-artifacts
+          name: mlx-swift-qwen-working-smoke-artifacts
           if-no-files-found: ignore
           path: |
-            mlx-swift/MLXSwiftPackageTests.xcresult
-
-  experimental-qwen:
-    name: Experimental Qwen text smoke
-    runs-on: macos-15
-    timeout-minutes: 45
-    needs: core-smoke
-    continue-on-error: true
-
-    env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      NSUnbufferedIO: "YES"
-      CLICOLOR: "1"
-
-    steps:
-      - name: Check out wrapper repository
-        uses: actions/checkout@v5
-
-      - name: Show runner and toolchain info
-        shell: bash
-        run: |
-          set -euxo pipefail
-          uname -a
-          sw_vers
-          xcode-select -p
-          xcodebuild -version
-          swift --version
-          pwd
-          ls -la
-
-      - name: Create experimental Qwen smoke package
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p smoke-qwen
-          cd smoke-qwen
-
-          cat > Package.swift <<'SWIFT'
-          // swift-tools-version: 6.1
-          import PackageDescription
-
-          let package = Package(
-              name: "SmokeQwen",
-              platforms: [.macOS(.v14)],
-              dependencies: [
-                  .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMajor(from: "3.31.3")),
-                  .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
-                  .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0")
-              ],
-              targets: [
-                  .executableTarget(
-                      name: "SmokeQwen",
-                      dependencies: [
-                          .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                          .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                          .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
-                          .product(name: "HuggingFace", package: "swift-huggingface"),
-                          .product(name: "Tokenizers", package: "swift-transformers")
-                      ]
-                  )
-              ]
-          )
-          SWIFT
-
-          mkdir -p Sources/SmokeQwen
-          cat > Sources/SmokeQwen/main.swift <<'SWIFT'
-          import Foundation
-          import HuggingFace
-          import Tokenizers
-          import MLXLLM
-          import MLXLMCommon
-          import MLXHuggingFace
-
-          @main
-          struct SmokeQwen {
-              static func main() async throws {
-                  print("Starting experimental Qwen text-only smoke test.")
-                  print("About to load mlx-community/Qwen2.5-0.5B-Instruct-4bit")
-
-                  let model = try await loadModel(
-                      from: #hubDownloader(),
-                      using: #huggingFaceTokenizerLoader(),
-                      id: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-                  )
-
-                  let session = ChatSession(model)
-                  let response = try await session.respond(to: "Reply with exactly OK")
-
-                  print("=== RESPONSE BEGIN ===")
-                  print(response)
-                  print("=== RESPONSE END ===")
-                  print("Experimental Qwen smoke test passed.")
-              }
-          }
-          SWIFT
-
-      - name: Resolve package
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          swift package resolve
-
-      - name: Build with SwiftPM
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          swift build -v
-
-      - name: Inspect build outputs for MLX metallib or bundle
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          echo "=== BUILD TREE ==="
-          find .build -maxdepth 6 | sort | sed -n '1,500p' || true
-
-          echo "=== METALLIB FILES ==="
-          find .build -name '*.metallib' | sort || true
-
-          echo "=== Cmlx / bundle candidates ==="
-          find .build \( -iname '*cmlx*' -o -iname '*.bundle' \) | sort || true
-
-          BIN_DIR="$(cd .build/arm64-apple-macosx/debug && pwd)"
-          BINARY="$BIN_DIR/SmokeQwen"
-
-          test -x "$BINARY"
-
-          MLX_METALLIB_PATH=""
-          MLX_BUNDLE_DIR=""
-
-          # Prefer an MLX-owned metallib, not a random system metallib.
-          if find .build -path '*Cmlx*default.metallib' | grep -q .; then
-            MLX_METALLIB_PATH="$(find .build -path '*Cmlx*default.metallib' | head -n 1)"
-          elif find .build -path '*mlx-swift_Cmlx.bundle*default.metallib' | grep -q .; then
-            MLX_METALLIB_PATH="$(find .build -path '*mlx-swift_Cmlx.bundle*default.metallib' | head -n 1)"
-          fi
-
-          if find .build \( -iname 'mlx-swift_Cmlx.bundle' -o -iname 'Cmlx.bundle' \) | grep -q .; then
-            MLX_BUNDLE_DIR="$(find .build \( -iname 'mlx-swift_Cmlx.bundle' -o -iname 'Cmlx.bundle' \) | head -n 1)"
-          fi
-
-          echo "BIN_DIR=$BIN_DIR" | tee smoke-env.txt
-          echo "BINARY=$BINARY" | tee -a smoke-env.txt
-          echo "MLX_METALLIB_PATH=${MLX_METALLIB_PATH}" | tee -a smoke-env.txt
-          echo "MLX_BUNDLE_DIR=${MLX_BUNDLE_DIR}" | tee -a smoke-env.txt
-
-          if [ -n "$MLX_METALLIB_PATH" ]; then
-            ls -lah "$MLX_METALLIB_PATH"
-          fi
-
-          if [ -n "$MLX_BUNDLE_DIR" ]; then
-            find "$MLX_BUNDLE_DIR" -maxdepth 4 | sort | sed -n '1,200p'
-          fi
-
-      - name: Stage only MLX-owned metallib beside executable
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          . ./smoke-env.txt
-
-          if [ -n "${MLX_METALLIB_PATH:-}" ]; then
-            cp -f "$MLX_METALLIB_PATH" "$BIN_DIR/default.metallib"
-            ls -lah "$BIN_DIR/default.metallib"
-          else
-            echo "No MLX-owned default.metallib found."
-          fi
-
-      - name: Run experimental Qwen smoke only if MLX metallib exists
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd smoke-qwen
-          . ./smoke-env.txt
-
-          cd "$BIN_DIR"
-          pwd
-          ls -lah
-          find . -maxdepth 4 | sort | sed -n '1,300p'
-
-          if [ ! -f "$BIN_DIR/default.metallib" ]; then
-            echo "Skipping runtime smoke: MLX-specific default.metallib was not produced/staged."
-            echo "This is a diagnostic pass, not a runtime pass."
-            exit 0
-          fi
-
-          export METAL_PATH="$BIN_DIR/default.metallib"
-          "$BINARY"
-
-      - name: Upload experimental artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlx-swift-qwen-experimental-artifacts
-          if-no-files-found: ignore
-          path: |
-            smoke-qwen/.build
-            smoke-qwen/smoke-env.txt
+            mlx-swift-examples/qwen-smoke.log
+            mlx-swift-examples/DerivedData
+            .hf-home

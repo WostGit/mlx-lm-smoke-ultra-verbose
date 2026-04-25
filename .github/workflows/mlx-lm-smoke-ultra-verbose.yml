@@ -1,354 +1,259 @@
-name: MLX Swift Submodule And Metallib Ultra Verbose
+name: MLX Swift Submodule And Metallib Ultra Verbose Proof
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
   pull_request:
 
 jobs:
-  mlx-swift-main:
-    name: MLX Swift main with submodules and metallib diagnostics
+  mlx-swift-proof:
+    name: MLX Swift main with submodules, metallib, and proof diagnostics
     runs-on: macos-15
-    timeout-minutes: 150
+
+    timeout-minutes: 90
 
     env:
-      NSUnbufferedIO: "YES"
-      PYTHONUNBUFFERED: "1"
-      FORCE_COLOR: "1"
-      CI: "1"
+      LOG_DIR: logs
+      ARTIFACT_DIR: artifacts
+      MLX_SWIFT_DIR: mlx-swift
+      SMOKE_DIR: smoke-min
+      CHOSEN_SCHEME: mlx-swift-Package
+      MIN_EXPECTED_TESTS: "500"
 
     steps:
-      - name: Checkout workflow repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Toolchain info
+      - name: Prepare folders
         shell: bash
         run: |
-          set +e
-          mkdir -p logs artifacts
+          set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
+      - name: Toolchain proof
+        shell: bash
+        run: |
+          set -euo pipefail
           {
-            echo "=== DATE UTC ==="
+            echo "=== TOOLCHAIN ==="
             date -u
-            echo
-
-            echo "=== PWD ==="
-            pwd
-            echo
-
-            echo "=== sw_vers ==="
-            sw_vers
-            echo
-
-            echo "=== uname -a ==="
             uname -a
-            echo
-
-            echo "=== xcode-select -p ==="
-            xcode-select -p
-            echo
-
-            echo "=== xcodebuild -version ==="
+            sw_vers
             xcodebuild -version
-            echo
-
-            echo "=== swift --version ==="
             swift --version
-            echo
+            xcrun --find swift
+            xcrun --find xcodebuild
+            xcrun --find metal || true
+            xcrun --find metallib || true
+          } 2>&1 | tee "$LOG_DIR/00-toolchain.log"
 
-            echo "=== clang --version ==="
-            clang --version
-            echo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-            echo "=== xcrun --show-sdk-path ==="
-            xcrun --show-sdk-path
+      - name: Repository proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "=== REPOSITORY PROOF ==="
+            echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+            echo "GITHUB_SHA=$GITHUB_SHA"
+            echo "GITHUB_REF=$GITHUB_REF"
+            echo "PWD=$PWD"
             echo
+            echo "=== REMOTES ==="
+            git remote -v
+            echo
+            echo "=== HEAD ==="
+            git rev-parse HEAD
+            echo
+            echo "=== STATUS ==="
+            git status --short
+            echo
+            echo "=== SUBMODULES ==="
+            git submodule status --recursive || true
+          } 2>&1 | tee "$LOG_DIR/01-repo-proof.log"
 
-            echo "=== env | sort ==="
-            env | sort
-            echo
-          } | tee logs/00-toolchain.log
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "$ACTUAL_SHA" > "$ARTIFACT_DIR/repo-head.txt"
+
+          if [ "$ACTUAL_SHA" != "$GITHUB_SHA" ]; then
+            echo "ERROR: checkout SHA mismatch"
+            echo "GITHUB_SHA=$GITHUB_SHA"
+            echo "ACTUAL_SHA=$ACTUAL_SHA"
+            exit 1
+          fi
 
       - name: Clone mlx-swift with submodules
         shell: bash
         run: |
-          set -euxo pipefail
-          rm -rf mlx-swift
-
-          git clone --depth=1 --recurse-submodules https://github.com/ml-explore/mlx-swift.git mlx-swift
-          cd mlx-swift
-          git submodule update --init --recursive
-
+          set -euo pipefail
           {
-            echo "=== HEAD ==="
+            echo "=== CLONE MLX SWIFT ==="
+            git clone --recursive https://github.com/ml-explore/mlx-swift.git "$MLX_SWIFT_DIR"
+            cd "$MLX_SWIFT_DIR"
+            echo
+            echo "=== MLX SWIFT REMOTE ==="
+            git remote -v
+            echo
+            echo "=== MLX SWIFT HEAD ==="
             git rev-parse HEAD
             echo
-
-            echo "=== LAST COMMIT ==="
-            git log -1 --decorate --stat
-            echo
-
-            echo "=== SUBMODULE STATUS ==="
+            echo "=== MLX SWIFT SUBMODULE STATUS ==="
             git submodule status --recursive
-            echo
+          } 2>&1 | tee "$LOG_DIR/02-clone-mlx-swift.log"
 
-            echo "=== TOP LEVEL ==="
-            ls -la
-            echo
-          } | tee ../logs/01-clone.log
-
-      - name: Verify submodule-backed paths
+      - name: Swift package diagnostics
         shell: bash
         run: |
-          set +e
-          {
-            echo "=== IMPORTANT PATHS ==="
-            for p in \
-              "./mlx-swift/Package.swift" \
-              "./mlx-swift/Source/Cmlx" \
-              "./mlx-swift/Source/Cmlx/mlx" \
-              "./mlx-swift/Source/Cmlx/mlx-c" \
-              "./mlx-swift/Source/Cmlx/mlx-conditional/compiled_conditional.cpp" \
-              "./mlx-swift/Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp"
-            do
-              if [ -e "$p" ]; then
-                echo "FOUND: $p"
-              else
-                echo "MISSING: $p"
-              fi
-            done
-            echo
+          set -euo pipefail
+          cd "$MLX_SWIFT_DIR"
 
-            echo "=== FIND compiled_conditional.cpp ==="
-            find ./mlx-swift -name 'compiled_conditional.cpp' -print
-            echo
+          swift package tools-version 2>&1 | tee "../$LOG_DIR/03-swift-package-tools-version.log"
+          swift package resolve 2>&1 | tee "../$LOG_DIR/03-swift-package-resolve.log"
+          swift package describe 2>&1 | tee "../$LOG_DIR/03-swift-package-describe.log"
+          swift package dump-package 2>&1 | tee "../$LOG_DIR/03-swift-package-dump-package.log"
 
-            echo "=== FIND compiled.cpp ==="
-            find ./mlx-swift -path '*backend/cpu/compiled.cpp' -print
-            echo
-
-            echo "=== SUBMODULE TREES ==="
-            find ./mlx-swift/Source/Cmlx/mlx -maxdepth 4 | sed -n '1,300p'
-            echo
-            find ./mlx-swift/Source/Cmlx/mlx-c -maxdepth 4 | sed -n '1,300p'
-            echo
-          } | tee logs/02-submodule-truth.log
-
-      - name: SwiftPM metadata
-        shell: bash
-        working-directory: mlx-swift
-        run: |
-          set +e
-          swift package describe 2>&1 | tee ../logs/03-swift-package-describe.log
-          swift package dump-package 2>&1 | tee ../logs/03-swift-package-dump-package.log
-          swift package tools-version 2>&1 | tee ../logs/03-swift-package-tools-version.log
-          swift package resolve 2>&1 | tee ../logs/03-swift-package-resolve.log
-          swift build -v 2>&1 | tee ../logs/03-swift-build-v.log
-          exit 0
-
-      - name: Discover schemes
-        id: discover
-        shell: bash
-        working-directory: mlx-swift
-        run: |
-          set -o pipefail
-          xcodebuild -list 2>&1 | tee ../logs/04-xcodebuild-list.log
-          xcodebuild -list -json 2>&1 | tee ../logs/04-xcodebuild-list-json.log
-
-          python3 - <<'PY'
-          import json
-          import os
-
-          txt = open("../logs/04-xcodebuild-list-json.log", "r", encoding="utf-8", errors="replace").read()
-          start = txt.find("{")
-          schemes = []
-          if start != -1:
-              try:
-                  obj = json.loads(txt[start:])
-                  root = obj.get("project") or obj.get("workspace") or {}
-                  schemes = root.get("schemes", []) or []
-              except Exception:
-                  schemes = []
-
-          with open("../artifacts/schemes.txt", "w", encoding="utf-8") as f:
-              for s in schemes:
-                  f.write(s + "\n")
-
-          chosen = ""
-          for candidate in ["MLXSwiftPackageTests", "mlx-swift-Package"]:
-              if candidate in schemes:
-                  chosen = candidate
-                  break
-          if not chosen and schemes:
-              chosen = schemes[0]
-
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-              f.write(f"CHOSEN_SCHEME={chosen}\n")
-
-          print("schemes =", schemes)
-          print("CHOSEN_SCHEME =", chosen)
-          PY
-
-      - name: Emit scheme summary
+      - name: Xcode scheme diagnostics
         shell: bash
         run: |
-          set +e
-          {
-            echo "=== SCHEMES ==="
-            cat artifacts/schemes.txt 2>/dev/null || true
-            echo
-            echo "=== CHOSEN_SCHEME ==="
-            echo "${CHOSEN_SCHEME:-}"
-            echo
-          } | tee logs/05-scheme-summary.log
+          set -euo pipefail
+          cd "$MLX_SWIFT_DIR"
 
-      - name: Build chosen scheme
-        if: env.CHOSEN_SCHEME != ''
-        shell: bash
-        working-directory: mlx-swift
-        continue-on-error: true
-        run: |
-          set +e
-          rm -rf DerivedDataBuild
+          xcodebuild -list 2>&1 | tee "../$LOG_DIR/04-xcodebuild-list.log"
+          xcodebuild -list -json 2>&1 | tee "../$LOG_DIR/04-xcodebuild-list-json.log"
+
+          if ! grep -F "$CHOSEN_SCHEME" "../$LOG_DIR/04-xcodebuild-list.log" >/dev/null; then
+            echo "ERROR: chosen scheme not found: $CHOSEN_SCHEME"
+            exit 1
+          fi
 
           {
-            echo "=== BUILD CHOSEN SCHEME ==="
-            echo "SCHEME=$CHOSEN_SCHEME"
-            echo
-          } | tee ../logs/06-build-intro.log
+            echo "=== SCHEME SUMMARY ==="
+            echo "CHOSEN_SCHEME=$CHOSEN_SCHEME"
+            echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=YES"
+          } | tee "../$LOG_DIR/05-scheme-summary.log"
 
-          xcodebuild \
+          echo "$CHOSEN_SCHEME" > "../$ARTIFACT_DIR/schemes.txt"
+
+      - name: Build mlx-swift package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$MLX_SWIFT_DIR"
+
+          {
+            echo "=== BUILD INTRO ==="
+            echo "XCODEBUILD_CMD=xcodebuild build -scheme $CHOSEN_SCHEME -destination platform=macOS"
+          } | tee "../$LOG_DIR/06-build-intro.log"
+
+          set +e
+          xcodebuild build \
             -scheme "$CHOSEN_SCHEME" \
-            -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedDataBuild \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee ../logs/06-build.log
+            -destination 'platform=macOS' \
+            2>&1 | tee "../$LOG_DIR/06-build.log"
 
-          status=${PIPESTATUS[0]}
-          echo "$status" > ../artifacts/build-exit-status.txt
-          exit 0
+          BUILD_EXIT="${PIPESTATUS[0]}"
+          set -e
 
-      - name: Test chosen scheme
-        if: env.CHOSEN_SCHEME != ''
+          echo "$BUILD_EXIT" | tee "../$ARTIFACT_DIR/build-exit-status.txt"
+
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "ERROR: xcodebuild build failed with exit code $BUILD_EXIT"
+            exit "$BUILD_EXIT"
+          fi
+
+      - name: Test mlx-swift package and prove real test count
         shell: bash
-        working-directory: mlx-swift
-        continue-on-error: true
         run: |
-          set +e
-          rm -rf DerivedDataTest
+          set -euo pipefail
+          cd "$MLX_SWIFT_DIR"
 
           {
-            echo "=== TEST CHOSEN SCHEME ==="
-            echo "SCHEME=$CHOSEN_SCHEME"
-            echo
-          } | tee ../logs/07-test-intro.log
+            echo "=== TEST INTRO ==="
+            echo "XCODEBUILD_CMD=xcodebuild test -scheme $CHOSEN_SCHEME -destination platform=macOS"
+            echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+          } | tee "../$LOG_DIR/07-test-intro.log"
 
-          xcodebuild \
+          set +e
+          xcodebuild test \
             -scheme "$CHOSEN_SCHEME" \
-            -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedDataTest \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | tee ../logs/07-test.log
+            -destination 'platform=macOS' \
+            2>&1 | tee "../$LOG_DIR/07-test.log"
 
-          status=${PIPESTATUS[0]}
-          echo "$status" > ../artifacts/test-exit-status.txt
-          exit 0
+          TEST_EXIT="${PIPESTATUS[0]}"
+          set -e
 
-      - name: Extract test summary
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          python3 - <<'PY'
-          import os
+          echo "$TEST_EXIT" | tee "../$ARTIFACT_DIR/test-exit-status.txt"
 
-          path = "logs/07-test.log"
-          out = []
-          out.append("=== TEST LOG SUMMARY ===")
-          if not os.path.exists(path):
-              out.append("test log missing")
-          else:
-              lines = open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
-              hits = []
-              for line in lines:
-                  if (
-                      "** TEST SUCCEEDED **" in line or
-                      "** TEST FAILED **" in line or
-                      "Executed " in line and " tests" in line or
-                      "0 failures" in line or
-                      "Testing failed:" in line or
-                      "fatal error:" in line or
-                      "Invalid Exclude" in line
-                  ):
-                      hits.append(line)
-              out.extend(hits[:200])
-          open("artifacts/test-summary.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
-          PY
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            echo "ERROR: xcodebuild test failed with exit code $TEST_EXIT"
+            exit "$TEST_EXIT"
+          fi
 
-          cat artifacts/test-summary.txt | tee logs/08-test-summary.log
+          if ! grep -F "** TEST SUCCEEDED **" "../$LOG_DIR/07-test.log" >/dev/null; then
+            echo "ERROR: raw test log does not contain ** TEST SUCCEEDED **"
+            exit 1
+          fi
 
-      - name: Deep metallib and bundle scan
-        if: always()
-        shell: bash
-        run: |
-          set +e
+          TEST_COUNT="$(
+            grep -Eo 'Executed [0-9]+ tests' "../$LOG_DIR/07-test.log" \
+              | awk '{sum += $2} END {print sum+0}'
+          )"
+
+          echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT" | tee "../$ARTIFACT_DIR/test-summary.txt"
+
+          if [ "$TEST_COUNT" -lt "$MIN_EXPECTED_TESTS" ]; then
+            echo "ERROR: Expected at least $MIN_EXPECTED_TESTS executed tests, got $TEST_COUNT"
+            exit 1
+          fi
+
           {
-            echo "=== FIND ALL METALLIB FILES ==="
-            find . -name '*.metallib' -print
+            echo "=== TEST LOG SUMMARY ==="
+            grep -E 'Executed [0-9]+ tests, with [0-9]+ failures' "../$LOG_DIR/07-test.log" || true
             echo
+            echo "RAW_TEST_LOG_CONTAINS_TEST_SUCCEEDED=YES"
+            echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT"
+            echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+            echo "TEST_COUNT_OK=YES"
+          } | tee "../$LOG_DIR/08-test-summary.log"
 
-            echo "=== FIND ALL .bundle DIRECTORIES ==="
-            find . -name '*.bundle' -type d -print
-            echo
-
-            echo "=== FIND mlx-swift_Cmlx.bundle CONTENTS ==="
-            find . -name 'mlx-swift_Cmlx.bundle' -type d -exec sh -c 'echo "--- {} ---"; find "{}" | sed -n "1,300p"' \;
-            echo
-
-            echo "=== FIND Resources/default.metallib ==="
-            find . -path '*Resources/default.metallib' -print
-            echo
-
-            echo "=== FIND ANY default.metallib ==="
-            find . -name 'default.metallib' -print
-            echo
-
-            echo "=== DERIVEDDATA BUILD PRODUCTS ==="
-            find mlx-swift/DerivedDataBuild -maxdepth 6 | sed -n '1,500p' || true
-            echo
-
-            echo "=== DERIVEDDATA TEST PRODUCTS ==="
-            find mlx-swift/DerivedDataTest -maxdepth 6 | sed -n '1,500p' || true
-            echo
-
-            echo "=== XCTEST BUNDLES ==="
-            find . -name '*.xctest' -print
-            echo
-
-            echo "=== XCRESULTS ==="
-            find . -name '*.xcresult' -print
-            echo
-          } | tee logs/09-metallib-scan.log
-
-      - name: Minimal runtime smoke with bundle diagnostics
-        if: always()
+      - name: Metallib scan
         shell: bash
         run: |
-          set +e
-          rm -rf smoke-min
-          mkdir -p smoke-min/Sources/SmokeMin
+          set -euo pipefail
 
-          cat > smoke-min/Package.swift <<'EOF'
-          // swift-tools-version: 6.0
+          {
+            echo "=== METALLIB SCAN ==="
+            echo "Searching for metallib files under repo workspace..."
+            find "$PWD" -name '*.metallib' -type f -print -exec ls -lh {} \; || true
+            echo
+            echo "Searching for default.metallib..."
+            find "$PWD" -name 'default.metallib' -type f -print -exec ls -lh {} \; || true
+          } 2>&1 | tee "$LOG_DIR/09-metallib-scan.log"
+
+          METALLIB_COUNT="$(find "$PWD" -name '*.metallib' -type f | wc -l | tr -d ' ')"
+          echo "METALLIB_COUNT=$METALLIB_COUNT" | tee "$ARTIFACT_DIR/metallib-count.txt"
+
+          if [ "$METALLIB_COUNT" -lt 1 ]; then
+            echo "ERROR: no .metallib files found"
+            exit 1
+          fi
+
+      - name: Create deterministic MLX smoke package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR/Sources/SmokeProbe"
+
+          cat > "$SMOKE_DIR/Package.swift" <<'SWIFT'
+          // swift-tools-version: 5.9
           import PackageDescription
 
           let package = Package(
-              name: "SmokeMin",
+              name: "SmokeProbe",
               platforms: [
                   .macOS(.v14)
               ],
@@ -357,104 +262,216 @@ jobs:
               ],
               targets: [
                   .executableTarget(
-                      name: "SmokeMin",
+                      name: "SmokeProbe",
                       dependencies: [
                           .product(name: "MLX", package: "mlx-swift"),
-                          .product(name: "MLXNN", package: "mlx-swift")
-                      ],
-                      path: "Sources/SmokeMin"
+                          .product(name: "MLXRandom", package: "mlx-swift")
+                      ]
                   )
               ]
           )
-          EOF
+          SWIFT
 
-          cat > smoke-min/Sources/SmokeMin/main.swift <<'EOF'
+          cat > "$SMOKE_DIR/Sources/SmokeProbe/main.swift" <<'SWIFT'
           import Foundation
           import MLX
-          import MLXNN
+          import MLXRandom
 
-          func log(_ s: String) {
-              print(s)
-              fflush(stdout)
+          func fail(_ message: String) -> Never {
+              print("MLX_SMOKE_FAILURE=\(message)")
+              exit(1)
           }
 
-          log("=== SMOKE MIN START ===")
-          let a = MLXArray([1.0, 2.0, 3.0])
-          let b = MLXArray([10.0, 20.0, 30.0])
-          log("a = \(a)")
-          log("b = \(b)")
-          log("a + b = \(a + b)")
-          log("a * b = \(a * b)")
+          let args = CommandLine.arguments
+          let expectWrongResult = args.contains("--expect-wrong-result")
 
-          let m = matmul(
-              MLXArray([[1.0, 2.0], [3.0, 4.0]]),
-              MLXArray([[5.0, 6.0], [7.0, 8.0]])
-          )
-          log("matmul = \(m)")
+          print("MLX_SMOKE_BEGIN=YES")
 
-          let linear = Linear(inputDimensions: 2, outputDimensions: 2)
-          let y = linear(MLXArray([[1.0, 2.0]]))
-          log("linear = \(y)")
+          let a = MLXArray([Float(1), Float(2), Float(3)])
+          let b = MLXArray([Float(10), Float(20), Float(30)])
+          let c = a + b
+          eval(c)
 
-          eval(m, y)
-          log("=== SMOKE MIN END ===")
-          EOF
+          let cValues = c.asArray(Float.self)
+          print("MLX_SMOKE_RESULT=\(cValues)")
 
-          cd smoke-min
-          swift package describe 2>&1 | tee ../logs/10-smoke-describe.log
-          swift package resolve 2>&1 | tee ../logs/10-smoke-resolve.log
-          swift build -v 2>&1 | tee ../logs/10-smoke-build.log
+          let expectedVector: [Float] = expectWrongResult
+              ? [Float(999), Float(999), Float(999)]
+              : [Float(11), Float(22), Float(33)]
 
-          BIN="$(find .build -type f -name SmokeMin | head -n 1)"
-          echo "BIN=$BIN" | tee ../logs/10-smoke-run.log
-          echo "=== FIND .build bundles ===" | tee -a ../logs/10-smoke-run.log
-          find .build -name '*.bundle' -type d -print | tee -a ../logs/10-smoke-run.log
-          echo "=== FIND .build metallib ===" | tee -a ../logs/10-smoke-run.log
-          find .build -name '*.metallib' -print | tee -a ../logs/10-smoke-run.log
+          if cValues != expectedVector {
+              if expectWrongResult {
+                  print("NEGATIVE_CONTROL_EXPECTED_FAILURE=YES")
+              }
+              fail("vector mismatch expected \(expectedVector), got \(cValues)")
+          }
 
-          if [ -n "$BIN" ] && [ -x "$BIN" ]; then
-            "$BIN" 2>&1 | tee -a ../logs/10-smoke-run.log
-          else
-            echo "SmokeMin binary missing or not executable" | tee -a ../logs/10-smoke-run.log
-          fi
+          let x = MLXArray(Array(repeating: Float(1), count: 1024), [32, 32])
+          let y = matmul(x, x)
+          eval(y)
 
-          exit 0
+          let yValues = y.asArray(Float.self)
+          print("MLX_MATMUL_FIRST=\(yValues[0])")
+          print("MLX_MATMUL_COUNT=\(yValues.count)")
 
-      - name: Final summary
-        if: always()
+          if yValues.count != 1024 {
+              fail("matmul count mismatch")
+          }
+
+          if abs(yValues[0] - Float(32)) > Float(0.0001) {
+              fail("matmul first mismatch")
+          }
+
+          print("MLX_SMOKE_RESULT_OK=YES")
+          print("MLX_MATMUL_RESULT_OK=YES")
+          print("MLX_SMOKE_END=YES")
+          SWIFT
+
+          {
+            echo "=== SMOKE PACKAGE CREATED ==="
+            find "$SMOKE_DIR" -maxdepth 4 -type f -print
+            echo
+            cat "$SMOKE_DIR/Package.swift"
+            echo
+            cat "$SMOKE_DIR/Sources/SmokeProbe/main.swift"
+          } 2>&1 | tee "$LOG_DIR/10-smoke-describe.log"
+
+      - name: Resolve and build smoke package
         shell: bash
         run: |
+          set -euo pipefail
+          cd "$SMOKE_DIR"
+
+          swift package resolve 2>&1 | tee "../$LOG_DIR/10-smoke-resolve.log"
+
           set +e
+          swift build -v 2>&1 | tee "../$LOG_DIR/10-smoke-build.log"
+          SMOKE_BUILD_EXIT="${PIPESTATUS[0]}"
+          set -e
+
+          echo "$SMOKE_BUILD_EXIT" | tee "../$ARTIFACT_DIR/smoke-build-exit-status.txt"
+
+          if [ "$SMOKE_BUILD_EXIT" -ne 0 ]; then
+            echo "ERROR: smoke build failed with exit code $SMOKE_BUILD_EXIT"
+            exit "$SMOKE_BUILD_EXIT"
+          fi
+
+      - name: Run deterministic MLX smoke proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SMOKE_DIR"
+
+          set +e
+          swift run SmokeProbe 2>&1 | tee "../$LOG_DIR/10-smoke-run.log"
+          SMOKE_RUN_EXIT="${PIPESTATUS[0]}"
+          set -e
+
+          echo "$SMOKE_RUN_EXIT" | tee "../$ARTIFACT_DIR/smoke-run-exit-status.txt"
+
+          if [ "$SMOKE_RUN_EXIT" -ne 0 ]; then
+            echo "ERROR: smoke run failed with exit code $SMOKE_RUN_EXIT"
+            exit "$SMOKE_RUN_EXIT"
+          fi
+
+          grep -F "MLX_SMOKE_BEGIN=YES" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_SMOKE_RESULT=[11.0, 22.0, 33.0]" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_MATMUL_FIRST=32.0" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_MATMUL_COUNT=1024" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_SMOKE_RESULT_OK=YES" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_MATMUL_RESULT_OK=YES" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_SMOKE_END=YES" "../$LOG_DIR/10-smoke-run.log"
+
+      - name: Negative control proves harness fails bad result
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SMOKE_DIR"
+
+          set +e
+          swift run SmokeProbe --expect-wrong-result 2>&1 | tee "../$LOG_DIR/10-negative-control.log"
+          NEG_EXIT="${PIPESTATUS[0]}"
+          set -e
+
+          echo "$NEG_EXIT" | tee "../$ARTIFACT_DIR/negative-control-exit-status.txt"
+
+          if [ "$NEG_EXIT" -eq 0 ]; then
+            echo "ERROR: negative control unexpectedly passed"
+            exit 1
+          fi
+
+          grep -F "NEGATIVE_CONTROL_EXPECTED_FAILURE=YES" "../$LOG_DIR/10-negative-control.log"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "=== SHA256 CHECKSUMS ==="
+            shasum -a 256 "$LOG_DIR"/*.log "$ARTIFACT_DIR"/* 2>/dev/null || true
+          } | tee "$ARTIFACT_DIR/checksums.sha256"
+
+          test -s "$ARTIFACT_DIR/checksums.sha256"
+
+      - name: Final proof summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO_HEAD="$(cat "$ARTIFACT_DIR/repo-head.txt")"
+          TEST_COUNT="$(grep -Eo 'TOTAL_EXECUTED_TESTS=[0-9]+' "$ARTIFACT_DIR/test-summary.txt" | tail -1 | cut -d= -f2)"
+          METALLIB_COUNT="$(cat "$ARTIFACT_DIR/metallib-count.txt")"
+          BUILD_EXIT="$(cat "$ARTIFACT_DIR/build-exit-status.txt")"
+          TEST_EXIT="$(cat "$ARTIFACT_DIR/test-exit-status.txt")"
+          SMOKE_BUILD_EXIT="$(cat "$ARTIFACT_DIR/smoke-build-exit-status.txt")"
+          SMOKE_RUN_EXIT="$(cat "$ARTIFACT_DIR/smoke-run-exit-status.txt")"
+          NEG_EXIT="$(cat "$ARTIFACT_DIR/negative-control-exit-status.txt")"
+
           {
             echo "=== FINAL SUMMARY ==="
-            echo "CHOSEN_SCHEME=${CHOSEN_SCHEME:-}"
+            echo "CHOSEN_SCHEME=$CHOSEN_SCHEME"
             echo
-
-            echo "=== TEST SUMMARY ==="
-            cat artifacts/test-summary.txt 2>/dev/null || true
+            echo "=== PROOF SUMMARY ==="
+            echo "REPO_HEAD=$REPO_HEAD"
+            echo "GITHUB_SHA=$GITHUB_SHA"
+            echo "SHA_MATCH=YES"
             echo
-
+            echo "SCHEME=$CHOSEN_SCHEME"
+            echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=YES"
+            echo
+            echo "XCODEBUILD_BUILD_EXIT=$BUILD_EXIT"
+            echo "XCODEBUILD_TEST_EXIT=$TEST_EXIT"
+            echo "RAW_TEST_LOG_CONTAINS_TEST_SUCCEEDED=YES"
+            echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT"
+            echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+            echo "TEST_COUNT_OK=YES"
+            echo
+            echo "METALLIB_COUNT=$METALLIB_COUNT"
+            echo "METALLIB_FOUND=YES"
+            echo
+            echo "SMOKE_BUILD_EXIT=$SMOKE_BUILD_EXIT"
+            echo "SMOKE_RUN_EXIT=$SMOKE_RUN_EXIT"
+            echo "MLX_SMOKE_RESULT_OK=YES"
+            echo "MLX_MATMUL_RESULT_OK=YES"
+            echo
+            echo "NEGATIVE_CONTROL_EXIT=$NEG_EXIT"
+            echo "NEGATIVE_CONTROL_PROVED_FAILURE=YES"
+            echo
+            echo "CHECKSUM_FILE=$ARTIFACT_DIR/checksums.sha256"
+            echo "FINAL_STATUS=PROVEN_SUCCESS"
+            echo
             echo "=== LOG FILES ==="
-            find logs -type f | sort
+            find "$LOG_DIR" -maxdepth 1 -type f | sort
             echo
-
             echo "=== ARTIFACT FILES ==="
-            find artifacts -type f | sort
-            echo
-          } | tee logs/11-final-summary.log
+            find "$ARTIFACT_DIR" -maxdepth 1 -type f | sort
+          } | tee "$LOG_DIR/11-final-summary.log"
 
-      - name: Upload artifacts
-        if: always()
+      - name: Upload proof artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: mlx-swift-submodule-and-metallib-diagnostics
-          if-no-files-found: warn
+          name: mlx-swift-proof-${{ github.sha }}
           path: |
-            logs/**
-            artifacts/**
-            mlx-swift/DerivedDataBuild/**
-            mlx-swift/DerivedDataTest/**
-            smoke-min/.build/**
-            smoke-min/Package.swift
-            smoke-min/Sources/**
-            **/*.xcresult
+            logs/
+            artifacts/

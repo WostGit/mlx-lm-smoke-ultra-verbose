@@ -1,4 +1,4 @@
-name: MLX Swift Core Proven Smoke
+name: MLX Swift Dynamic Scheme Probe Ultra Verbose
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ on:
   pull_request:
 
 jobs:
-  mlx-swift-core:
-    name: MLX Swift core proven smoke on macOS
+  mlx-swift-probe:
+    name: MLX Swift dynamic scheme probe on macOS
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -24,13 +24,9 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Toolchain and machine info
+      - name: Toolchain info
         run: |
           set +e
-          echo "=== PWD ==="
-          pwd
-          echo
-
           echo "=== DATE ==="
           date -u
           echo
@@ -55,23 +51,11 @@ jobs:
           swift --version
           echo
 
-          echo "=== clang --version ==="
-          clang --version
-          echo
-
           echo "=== xcrun --show-sdk-path ==="
           xcrun --show-sdk-path
           echo
 
-          echo "=== xcodebuild -showsdks ==="
-          xcodebuild -showsdks
-          echo
-
-          echo "=== env | sort ==="
-          env | sort
-          echo
-
-      - name: Bootstrap mlx-swift
+      - name: Clone mlx-swift
         run: |
           set -euxo pipefail
           rm -rf mlx-swift
@@ -85,12 +69,11 @@ jobs:
           ls -la mlx-swift
           echo
 
-      - name: Repository assertions
+      - name: Assert important paths
         run: |
           set +e
-          echo "=== ASSERTING IMPORTANT PATHS ==="
+          echo "=== IMPORTANT PATHS ==="
           for p in \
-            "." \
             "./mlx-swift" \
             "./mlx-swift/Package.swift" \
             "./mlx-swift/Source" \
@@ -105,10 +88,6 @@ jobs:
           done
           echo
 
-          echo "=== MLX SWIFT TREE (FIRST 400 PATHS) ==="
-          find ./mlx-swift | sed -n '1,400p'
-          echo
-
           echo "=== LOOK FOR compiled_conditional.cpp ==="
           find ./mlx-swift -name 'compiled_conditional.cpp' -print
           echo
@@ -117,7 +96,7 @@ jobs:
           find ./mlx-swift -name 'compiled.cpp' -print
           echo
 
-      - name: Package metadata discovery
+      - name: Package metadata
         working-directory: mlx-swift
         run: |
           set +e
@@ -133,17 +112,63 @@ jobs:
           swift package tools-version 2>&1 | tee ../swift-package-tools-version.log
           echo
 
-      - name: Xcode scheme discovery
+      - name: Discover Xcode schemes
+        id: discover
         working-directory: mlx-swift
         run: |
-          set +e
-          echo "=== xcodebuild -list ==="
-          xcodebuild -list 2>&1 | tee ../xcodebuild-list.log
+          set -o pipefail
+          xcodebuild -list -json 2>&1 | tee ../xcodebuild-list-json.log
+
+          python3 - <<'PY' > ../detected_scheme.txt
+          import json
+
+          path = "../xcodebuild-list-json.log"
+          text = open(path, "r", encoding="utf-8").read()
+
+          start = text.find("{")
+          if start == -1:
+              print("")
+              raise SystemExit(0)
+
+          try:
+              data = json.loads(text[start:])
+          except Exception:
+              print("")
+              raise SystemExit(0)
+
+          workspace = data.get("workspace", data.get("project", {}))
+          schemes = workspace.get("schemes", []) if isinstance(workspace, dict) else []
+
+          preferred = [
+              "MLXSwiftPackageTests",
+              "mlx-swift-Package",
+              "MLXTests",
+          ]
+
+          chosen = ""
+          for name in preferred:
+              if name in schemes:
+                  chosen = name
+                  break
+
+          if not chosen and schemes:
+              chosen = schemes[0]
+
+          print(chosen)
+          PY
+
+          echo "=== RAW SCHEME LIST ==="
+          cat ../xcodebuild-list-json.log
           echo
 
-          echo "=== xcodebuild -list -json ==="
-          xcodebuild -list -json 2>&1 | tee ../xcodebuild-list-json.log
-          echo
+          SCHEME="$(cat ../detected_scheme.txt)"
+          echo "DETECTED_SCHEME=$SCHEME" | tee -a "$GITHUB_ENV"
+
+          if [ -z "$SCHEME" ]; then
+            echo "No Xcode scheme detected."
+          else
+            echo "Chosen scheme: $SCHEME"
+          fi
 
       - name: SwiftPM build diagnostic
         working-directory: mlx-swift
@@ -156,51 +181,55 @@ jobs:
           echo "swift build exit status: $status"
           exit 0
 
-      - name: Proven xcode test build using working scheme
-        id: proven_test
+      - name: Build chosen scheme
+        id: build_scheme
+        if: env.DETECTED_SCHEME != ''
         working-directory: mlx-swift
+        continue-on-error: true
         run: |
-          set -o pipefail
+          set +e
           rm -rf DerivedData
 
-          echo "=== RUNNING THE KNOWN-WORKING SCHEME ==="
-          echo "Using MLXSwiftPackageTests instead of mlx-swift-Package."
-          echo "Reason: mlx-swift-Package is hitting compiled_conditional.cpp path issues."
+          echo "=== BUILDING CHOSEN SCHEME ==="
+          echo "Scheme: $DETECTED_SCHEME"
           echo
 
           xcodebuild \
-            -scheme MLXSwiftPackageTests \
+            -scheme "$DETECTED_SCHEME" \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | tee ../xcodebuild-proven-test.log
+            build 2>&1 | tee ../xcodebuild-chosen-build.log
 
-      - name: DerivedData and artifact scan
-        if: always()
+          status=${PIPESTATUS[0]}
+          echo "chosen scheme build exit status: $status"
+          exit 0
+
+      - name: Test chosen scheme
+        id: test_scheme
+        if: env.DETECTED_SCHEME != ''
+        working-directory: mlx-swift
+        continue-on-error: true
         run: |
           set +e
-          echo "=== DERIVED DATA TREE ==="
-          find mlx-swift/DerivedData | sed -n '1,600p' || true
+          echo "=== TESTING CHOSEN SCHEME ==="
+          echo "Scheme: $DETECTED_SCHEME"
           echo
 
-          echo "=== XCRESULTS ==="
-          find . -name '*.xcresult' -print
-          echo
+          xcodebuild \
+            -scheme "$DETECTED_SCHEME" \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test 2>&1 | tee ../xcodebuild-chosen-test.log
 
-          echo "=== XCTEST BUNDLES ==="
-          find . -name '*.xctest' -print
-          echo
+          status=${PIPESTATUS[0]}
+          echo "chosen scheme test exit status: $status"
+          exit 0
 
-          echo "=== METALLIB FILES ==="
-          find . -name '*.metallib' -print
-          echo
-
-          echo "=== APPS / BINARIES / DYLIBS ==="
-          find . \( -name '*.app' -o -name '*.dylib' -o -perm -111 \) | sed -n '1,400p'
-          echo
-
-      - name: Scaffold minimal executable smoke
+      - name: Minimal executable scaffold
         if: always()
         run: |
           set +e
@@ -249,12 +278,8 @@ jobs:
 
           log("a = \(a)")
           log("b = \(b)")
-
-          let c = a + b
-          log("a + b = \(c)")
-
-          let d = a * b
-          log("a * b = \(d)")
+          log("a + b = \(a + b)")
+          log("a * b = \(a * b)")
 
           let e = matmul(
               MLXArray([[1.0, 2.0], [3.0, 4.0]]),
@@ -263,104 +288,77 @@ jobs:
           log("matmul = \(e)")
 
           let linear = Linear(inputDimensions: 2, outputDimensions: 2)
-          let x = MLXArray([[1.0, 2.0]])
-          let y = linear(x)
-          log("linear(x) = \(y)")
+          let y = linear(MLXArray([[1.0, 2.0]]))
+          log("linear = \(y)")
 
-          eval(c, d, e, y)
+          eval(e, y)
           log("=== SMOKE MIN END ===")
           EOF
 
-          echo "=== smoke-min tree ==="
-          find smoke-min | sed -n '1,200p'
-
-      - name: Resolve minimal smoke
+      - name: Build minimal executable
         if: always()
         continue-on-error: true
         working-directory: smoke-min
         run: |
           set +e
-          echo "=== swift package describe (smoke-min) ==="
-          swift package describe 2>&1 | tee ../smoke-min-describe.log
-          echo
-
-          echo "=== swift package resolve (smoke-min) ==="
-          swift package resolve 2>&1 | tee ../smoke-min-resolve.log
-          status=${PIPESTATUS[0]}
-          echo "smoke-min resolve exit status: $status"
-          exit 0
-
-      - name: Build minimal smoke
-        if: always()
-        continue-on-error: true
-        working-directory: smoke-min
-        run: |
-          set +e
-          echo "=== swift build -v (smoke-min) ==="
           swift build -v 2>&1 | tee ../smoke-min-build.log
           status=${PIPESTATUS[0]}
           echo "smoke-min build exit status: $status"
-          echo
-
-          echo "=== smoke-min .build tree ==="
-          find .build | sed -n '1,500p' || true
           exit 0
 
-      - name: Run minimal smoke
+      - name: Run minimal executable
         if: always()
         continue-on-error: true
         working-directory: smoke-min
         run: |
           set +e
-          echo "=== locating SmokeMin binary ==="
           BIN="$(find .build -type f -name SmokeMin | head -n 1)"
-          echo "BIN=$BIN"
-          echo
+          echo "BIN=$BIN" | tee ../smoke-min-run.log
 
-          echo "=== locating metallib files ==="
-          find .build -name '*.metallib' -print
-          echo
+          echo "=== metallib files ===" | tee -a ../smoke-min-run.log
+          find .build -name '*.metallib' -print | tee -a ../smoke-min-run.log
 
-          if [ -z "$BIN" ]; then
-            echo "SmokeMin binary not found."
-            exit 0
+          if [ -n "$BIN" ] && [ -x "$BIN" ]; then
+            "$BIN" 2>&1 | tee -a ../smoke-min-run.log
+          else
+            echo "SmokeMin binary missing or not executable" | tee -a ../smoke-min-run.log
           fi
 
-          if [ ! -x "$BIN" ]; then
-            echo "SmokeMin binary exists but is not executable."
-            ls -l "$BIN" || true
-            exit 0
-          fi
-
-          echo "=== running SmokeMin ==="
-          "$BIN" 2>&1 | tee ../smoke-min-run.log
-          status=${PIPESTATUS[0]}
-          echo "SmokeMin runtime exit status: $status"
           exit 0
 
-      - name: Final summary
+      - name: Dump artifacts and logs
         if: always()
         run: |
           set +e
-          echo "=== FINAL SUMMARY ==="
-          echo "Proven test step outcome: ${{ steps.proven_test.outcome }}"
+          echo "=== XCRESULTS ==="
+          find . -name '*.xcresult' -print
           echo
-          echo "This workflow intentionally uses MLXSwiftPackageTests."
-          echo "It avoids mlx-swift-Package because that path is hitting compiled_conditional.cpp include failures."
+
+          echo "=== XCTEST BUNDLES ==="
+          find . -name '*.xctest' -print
+          echo
+
+          echo "=== METALLIB FILES ==="
+          find . -name '*.metallib' -print
+          echo
+
+          echo "=== DERIVEDDATA TREE ==="
+          find mlx-swift/DerivedData | sed -n '1,600p' || true
           echo
 
           echo "=== LOG FILES ==="
           find . -maxdepth 2 -name '*.log' -print | sort
           echo
 
-      - name: Upload diagnostic artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-core-proven-diagnostics
+          name: mlx-swift-dynamic-probe-diagnostics
           if-no-files-found: warn
           path: |
             *.log
+            detected_scheme.txt
             mlx-swift/DerivedData/**
             smoke-min/.build/**
             smoke-min/Package.swift

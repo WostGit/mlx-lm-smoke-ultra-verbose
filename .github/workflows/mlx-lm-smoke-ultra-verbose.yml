@@ -2,61 +2,178 @@ name: MLX Swift Submodule And Metallib Ultra Verbose Proof
 
 on:
   workflow_dispatch:
+    inputs:
+      mlx_swift_ref:
+        description: "mlx-swift branch, tag, or commit to test"
+        required: false
+        default: "main"
+      min_expected_tests:
+        description: "Minimum expected xcodebuild tests"
+        required: false
+        default: "500"
   push:
   pull_request:
 
 jobs:
   mlx-swift-proof:
-    name: MLX Swift main with submodules, metallib, and proof diagnostics
+    name: MLX Swift main with submodules, metallib, smoke, negative control, and ultra verbose proof
     runs-on: macos-15
-
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
       LOG_DIR: logs
       ARTIFACT_DIR: artifacts
+      RESULT_BUNDLE_DIR: result-bundles
       MLX_SWIFT_DIR: mlx-swift
       SMOKE_DIR: smoke-min
       CHOSEN_SCHEME: mlx-swift-Package
-      MIN_EXPECTED_TESTS: "500"
+      DEFAULT_MLX_SWIFT_REF: main
+      DEFAULT_MIN_EXPECTED_TESTS: "500"
 
     steps:
+      - name: Initialize strict shell environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
+          {
+            echo "=== INITIALIZATION ==="
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "LOCAL_DATE=$(date '+%Y-%m-%dT%H:%M:%S%z')"
+            echo "PWD=$PWD"
+            echo "RUNNER_OS=${RUNNER_OS:-unset}"
+            echo "RUNNER_ARCH=${RUNNER_ARCH:-unset}"
+            echo "RUNNER_NAME=${RUNNER_NAME:-unset}"
+            echo "RUNNER_TEMP=${RUNNER_TEMP:-unset}"
+            echo "RUNNER_TOOL_CACHE=${RUNNER_TOOL_CACHE:-unset}"
+            echo "GITHUB_WORKFLOW=${GITHUB_WORKFLOW:-unset}"
+            echo "GITHUB_JOB=${GITHUB_JOB:-unset}"
+            echo "GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-unset}"
+            echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-unset}"
+            echo "GITHUB_REF=${GITHUB_REF:-unset}"
+            echo "GITHUB_SHA=${GITHUB_SHA:-unset}"
+            echo "GITHUB_ACTOR=${GITHUB_ACTOR:-unset}"
+            echo "GITHUB_RUN_ID=${GITHUB_RUN_ID:-unset}"
+            echo "GITHUB_RUN_NUMBER=${GITHUB_RUN_NUMBER:-unset}"
+            echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-unset}"
+            echo
+            echo "=== DISK SPACE ==="
+            df -h
+            echo
+            echo "=== TOP LEVEL FILES BEFORE CHECKOUT ==="
+            find "$PWD" -maxdepth 2 -print | sort || true
+          } 2>&1 | tee "$LOG_DIR/00-initialization.log"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Prepare folders
+      - name: Resolve workflow inputs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
+          MLX_SWIFT_REF="${{ github.event.inputs.mlx_swift_ref }}"
+          MIN_EXPECTED_TESTS="${{ github.event.inputs.min_expected_tests }}"
+
+          if [ -z "$MLX_SWIFT_REF" ]; then
+            MLX_SWIFT_REF="$DEFAULT_MLX_SWIFT_REF"
+          fi
+
+          if [ -z "$MIN_EXPECTED_TESTS" ]; then
+            MIN_EXPECTED_TESTS="$DEFAULT_MIN_EXPECTED_TESTS"
+          fi
+
+          case "$MIN_EXPECTED_TESTS" in
+            ''|*[!0-9]*)
+              echo "ERROR: min_expected_tests must be numeric, got: $MIN_EXPECTED_TESTS"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "MLX_SWIFT_REF=$MLX_SWIFT_REF"
+            echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+          } | tee "$ARTIFACT_DIR/resolved-inputs.env"
+
+          {
+            echo "=== RESOLVED INPUTS ==="
+            cat "$ARTIFACT_DIR/resolved-inputs.env"
+          } 2>&1 | tee "$LOG_DIR/00-resolved-inputs.log"
 
       - name: Toolchain proof
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
 
           {
-            echo "=== TOOLCHAIN ==="
-            date -u
+            echo "=== TOOLCHAIN PROOF ==="
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "=== SYSTEM ==="
             uname -a
+            echo
+            echo "=== MACOS ==="
             sw_vers
+            echo
+            echo "=== XCODE SELECT ==="
+            xcode-select -p
+            echo
+            echo "=== XCODEBUILD VERSION ==="
             xcodebuild -version
+            echo
+            echo "=== XCODEBUILD SDKS ==="
+            xcodebuild -showsdks
+            echo
+            echo "=== XCODEBUILD DESTINATIONS HELP ==="
+            xcodebuild -help | sed -n '1,220p'
+            echo
+            echo "=== SWIFT VERSION ==="
             swift --version
-            xcrun --find swift
-            xcrun --find xcodebuild
+            echo
+            echo "=== SWIFT ENVIRONMENT ==="
+            swift -print-target-info || true
+            echo
+            echo "=== TOOL LOCATIONS ==="
+            xcrun --find swift || true
+            xcrun --find swiftc || true
+            xcrun --find xcodebuild || true
+            xcrun --find xcode-select || true
+            xcrun --find xcodebuild || true
             xcrun --find metal || true
             xcrun --find metallib || true
-          } 2>&1 | tee "$LOG_DIR/00-toolchain.log"
+            xcrun --find xcrun || true
+            xcrun --find git || true
+            xcrun --find shasum || true
+            echo
+            echo "=== METAL VERSION CHECKS ==="
+            xcrun metal --version || true
+            xcrun metallib --version || true
+            echo
+            echo "=== GIT VERSION ==="
+            git --version
+            echo
+            echo "=== ENVIRONMENT SNAPSHOT ==="
+            env | sort
+            echo
+            echo "=== DISK SPACE ==="
+            df -h
+          } 2>&1 | tee "$LOG_DIR/01-toolchain.log"
 
       - name: Repository proof
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
 
           {
             echo "=== REPOSITORY PROOF ==="
@@ -71,12 +188,24 @@ jobs:
             echo "=== HEAD ==="
             git rev-parse HEAD
             echo
-            echo "=== STATUS ==="
+            echo "=== BRANCHES ==="
+            git branch -a -vv || true
+            echo
+            echo "=== RECENT COMMITS ==="
+            git log --oneline --decorate --graph -n 30 || true
+            echo
+            echo "=== STATUS SHORT ==="
             git status --short
+            echo
+            echo "=== STATUS FULL ==="
+            git status
             echo
             echo "=== SUBMODULES ==="
             git submodule status --recursive || true
-          } 2>&1 | tee "$LOG_DIR/01-repo-proof.log"
+            echo
+            echo "=== TOP LEVEL TREE ==="
+            find "$PWD" -maxdepth 3 -print | sort | sed -n '1,500p'
+          } 2>&1 | tee "$LOG_DIR/02-repo-proof.log"
 
           ACTUAL_SHA="$(git rev-parse HEAD)"
           echo "$ACTUAL_SHA" > "$ARTIFACT_DIR/repo-head.txt"
@@ -92,52 +221,145 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
+          source "$ARTIFACT_DIR/resolved-inputs.env"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
           rm -rf "$MLX_SWIFT_DIR"
 
           {
             echo "=== CLONE MLX SWIFT ==="
-            git clone --recursive https://github.com/ml-explore/mlx-swift.git "$MLX_SWIFT_DIR"
-            cd "$MLX_SWIFT_DIR"
+            echo "MLX_SWIFT_REF=$MLX_SWIFT_REF"
             echo
-            echo "=== MLX SWIFT REMOTE ==="
+            echo "=== CLONE COMMAND ==="
+            echo "git clone --recursive https://github.com/ml-explore/mlx-swift.git $MLX_SWIFT_DIR"
+          } 2>&1 | tee "$LOG_DIR/03-clone-mlx-swift-intro.log"
+
+          git clone --recursive https://github.com/ml-explore/mlx-swift.git "$MLX_SWIFT_DIR" 2>&1 | tee "$LOG_DIR/03-clone-mlx-swift.log"
+
+          cd "$MLX_SWIFT_DIR"
+
+          {
+            echo "=== FETCH REQUESTED REF ==="
+            git fetch --tags --force origin 2>&1
+            echo
+            echo "=== CHECKOUT REQUESTED REF ==="
+            git checkout "$MLX_SWIFT_REF" 2>&1
+            echo
+            echo "=== SYNC SUBMODULES ==="
+            git submodule sync --recursive 2>&1
+            echo
+            echo "=== UPDATE SUBMODULES ==="
+            git submodule update --init --recursive 2>&1
+          } 2>&1 | tee "../$LOG_DIR/03-checkout-mlx-swift-ref.log"
+
+          MLX_SWIFT_HEAD="$(git rev-parse HEAD)"
+          MLX_SWIFT_DESCRIBE="$(git describe --always --dirty --tags || true)"
+
+          {
+            echo "MLX_SWIFT_REF=$MLX_SWIFT_REF"
+            echo "MLX_SWIFT_HEAD=$MLX_SWIFT_HEAD"
+            echo "MLX_SWIFT_DESCRIBE=$MLX_SWIFT_DESCRIBE"
+          } | tee "../$ARTIFACT_DIR/mlx-swift-version.env"
+
+          {
+            echo "=== MLX SWIFT PROOF ==="
+            cat "../$ARTIFACT_DIR/mlx-swift-version.env"
+            echo
+            echo "=== REMOTE ==="
             git remote -v
             echo
-            echo "=== MLX SWIFT HEAD ==="
+            echo "=== HEAD ==="
             git rev-parse HEAD
             echo
-            echo "=== MLX SWIFT STATUS ==="
+            echo "=== DESCRIBE ==="
+            git describe --always --dirty --tags || true
+            echo
+            echo "=== RECENT COMMITS ==="
+            git log --oneline --decorate --graph -n 50 || true
+            echo
+            echo "=== STATUS SHORT ==="
             git status --short
             echo
-            echo "=== MLX SWIFT SUBMODULE STATUS ==="
+            echo "=== STATUS FULL ==="
+            git status
+            echo
+            echo "=== SUBMODULE STATUS ==="
             git submodule status --recursive
-          } 2>&1 | tee "$LOG_DIR/02-clone-mlx-swift.log"
+            echo
+            echo "=== SUBMODULE SUMMARY ==="
+            git submodule summary --recursive || true
+            echo
+            echo "=== TOP LEVEL TREE ==="
+            find "$PWD" -maxdepth 3 -print | sort | sed -n '1,700p'
+          } 2>&1 | tee "../$LOG_DIR/03-mlx-swift-proof.log"
 
       - name: Swift package diagnostics
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$MLX_SWIFT_DIR"
 
-          swift package tools-version 2>&1 | tee "../$LOG_DIR/03-swift-package-tools-version.log"
-          swift package resolve 2>&1 | tee "../$LOG_DIR/03-swift-package-resolve.log"
-          swift package describe 2>&1 | tee "../$LOG_DIR/03-swift-package-describe.log"
-          swift package dump-package 2>&1 | tee "../$LOG_DIR/03-swift-package-dump-package.log"
+          {
+            echo "=== PACKAGE FILES ==="
+            find "$PWD" \
+              \( -name 'Package.swift' -o -name 'Package.resolved' -o -name '*.swift' \) \
+              -maxdepth 5 \
+              -type f \
+              -print | sort
+            echo
+            echo "=== ROOT Package.swift ==="
+            sed -n '1,260p' Package.swift
+            echo
+            echo "=== ROOT Package.resolved IF PRESENT ==="
+            if [ -f Package.resolved ]; then
+              cat Package.resolved
+            else
+              echo "Package.resolved not present before resolve"
+            fi
+          } 2>&1 | tee "../$LOG_DIR/04-package-files.log"
+
+          swift package tools-version 2>&1 | tee "../$LOG_DIR/04-swift-package-tools-version.log"
+          swift package resolve -v 2>&1 | tee "../$LOG_DIR/04-swift-package-resolve.log"
+          swift package describe 2>&1 | tee "../$LOG_DIR/04-swift-package-describe.log"
+          swift package dump-package 2>&1 | tee "../$LOG_DIR/04-swift-package-dump-package.log"
+          swift package show-dependencies 2>&1 | tee "../$LOG_DIR/04-swift-package-show-dependencies.log"
+
+          {
+            echo "=== PACKAGE FILES AFTER RESOLVE ==="
+            find "$PWD" \
+              \( -name 'Package.swift' -o -name 'Package.resolved' -o -name '*.swift' \) \
+              -maxdepth 5 \
+              -type f \
+              -print | sort
+            echo
+            echo "=== Package.resolved AFTER RESOLVE ==="
+            if [ -f Package.resolved ]; then
+              cat Package.resolved
+            else
+              echo "Package.resolved still not present"
+            fi
+          } 2>&1 | tee "../$LOG_DIR/04-package-files-after-resolve.log"
 
       - name: Xcode scheme diagnostics
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$MLX_SWIFT_DIR"
 
-          xcodebuild -list 2>&1 | tee "../$LOG_DIR/04-xcodebuild-list.log"
-          xcodebuild -list -json 2>&1 | tee "../$LOG_DIR/04-xcodebuild-list-json.log"
+          xcodebuild -list 2>&1 | tee "../$LOG_DIR/05-xcodebuild-list.log"
+          xcodebuild -list -json 2>&1 | tee "../$LOG_DIR/05-xcodebuild-list-json.log"
+          xcodebuild -showBuildSettings -scheme "$CHOSEN_SCHEME" -destination 'platform=macOS' 2>&1 | tee "../$LOG_DIR/05-xcodebuild-show-build-settings.log" || true
 
-          if ! grep -F "$CHOSEN_SCHEME" "../$LOG_DIR/04-xcodebuild-list.log" >/dev/null; then
+          if ! grep -F "$CHOSEN_SCHEME" "../$LOG_DIR/05-xcodebuild-list.log" >/dev/null; then
             echo "ERROR: chosen scheme not found: $CHOSEN_SCHEME"
+            echo "Available schemes were logged to $LOG_DIR/05-xcodebuild-list.log"
             exit 1
           fi
 
@@ -147,30 +369,57 @@ jobs:
             echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=YES"
           } | tee "../$LOG_DIR/05-scheme-summary.log"
 
-          echo "$CHOSEN_SCHEME" > "../$ARTIFACT_DIR/schemes.txt"
+          echo "$CHOSEN_SCHEME" > "../$ARTIFACT_DIR/chosen-scheme.txt"
 
-      - name: Build mlx-swift package
+      - name: Build mlx-swift package with result bundle
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$MLX_SWIFT_DIR"
+
+          BUILD_RESULT_BUNDLE="../$RESULT_BUNDLE_DIR/mlx-swift-build.xcresult"
+          rm -rf "$BUILD_RESULT_BUNDLE"
 
           {
             echo "=== BUILD INTRO ==="
-            echo "XCODEBUILD_CMD=xcodebuild build -scheme $CHOSEN_SCHEME -destination platform=macOS"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "PWD=$PWD"
+            echo "CHOSEN_SCHEME=$CHOSEN_SCHEME"
+            echo "BUILD_RESULT_BUNDLE=$BUILD_RESULT_BUNDLE"
+            echo
+            echo "=== BUILD COMMAND ==="
+            echo "xcodebuild build -scheme $CHOSEN_SCHEME -destination platform=macOS -resultBundlePath $BUILD_RESULT_BUNDLE"
           } | tee "../$LOG_DIR/06-build-intro.log"
 
           set +e
           xcodebuild build \
             -scheme "$CHOSEN_SCHEME" \
             -destination 'platform=macOS' \
+            -resultBundlePath "$BUILD_RESULT_BUNDLE" \
             2>&1 | tee "../$LOG_DIR/06-build.log"
-
           BUILD_EXIT="${PIPESTATUS[0]}"
           set -e
 
           echo "$BUILD_EXIT" | tee "../$ARTIFACT_DIR/build-exit-status.txt"
+
+          {
+            echo "=== BUILD EXIT ==="
+            echo "XCODEBUILD_BUILD_EXIT=$BUILD_EXIT"
+            echo
+            echo "=== RESULT BUNDLE EXISTS ==="
+            if [ -d "$BUILD_RESULT_BUNDLE" ]; then
+              echo "BUILD_RESULT_BUNDLE_EXISTS=YES"
+              find "$BUILD_RESULT_BUNDLE" -maxdepth 4 -print | sort | sed -n '1,500p'
+            else
+              echo "BUILD_RESULT_BUNDLE_EXISTS=NO"
+            fi
+            echo
+            echo "=== BUILD LOG ERROR/WARNING SUMMARY ==="
+            grep -Ein 'error:|warning:|failed|succeeded|note:' "../$LOG_DIR/06-build.log" | tail -300 || true
+          } 2>&1 | tee "../$LOG_DIR/06-build-summary.log"
 
           if [ "$BUILD_EXIT" -ne 0 ]; then
             echo "ERROR: xcodebuild build failed with exit code $BUILD_EXIT"
@@ -181,25 +430,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          source "$ARTIFACT_DIR/resolved-inputs.env"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$MLX_SWIFT_DIR"
+
+          TEST_RESULT_BUNDLE="../$RESULT_BUNDLE_DIR/mlx-swift-test.xcresult"
+          rm -rf "$TEST_RESULT_BUNDLE"
 
           {
             echo "=== TEST INTRO ==="
-            echo "XCODEBUILD_CMD=xcodebuild test -scheme $CHOSEN_SCHEME -destination platform=macOS"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "PWD=$PWD"
+            echo "CHOSEN_SCHEME=$CHOSEN_SCHEME"
             echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+            echo "TEST_RESULT_BUNDLE=$TEST_RESULT_BUNDLE"
+            echo
+            echo "=== TEST COMMAND ==="
+            echo "xcodebuild test -scheme $CHOSEN_SCHEME -destination platform=macOS -resultBundlePath $TEST_RESULT_BUNDLE"
           } | tee "../$LOG_DIR/07-test-intro.log"
 
           set +e
           xcodebuild test \
             -scheme "$CHOSEN_SCHEME" \
             -destination 'platform=macOS' \
+            -resultBundlePath "$TEST_RESULT_BUNDLE" \
             2>&1 | tee "../$LOG_DIR/07-test.log"
-
           TEST_EXIT="${PIPESTATUS[0]}"
           set -e
 
           echo "$TEST_EXIT" | tee "../$ARTIFACT_DIR/test-exit-status.txt"
+
+          {
+            echo "=== TEST EXIT ==="
+            echo "XCODEBUILD_TEST_EXIT=$TEST_EXIT"
+            echo
+            echo "=== RESULT BUNDLE EXISTS ==="
+            if [ -d "$TEST_RESULT_BUNDLE" ]; then
+              echo "TEST_RESULT_BUNDLE_EXISTS=YES"
+              find "$TEST_RESULT_BUNDLE" -maxdepth 4 -print | sort | sed -n '1,500p'
+            else
+              echo "TEST_RESULT_BUNDLE_EXISTS=NO"
+            fi
+            echo
+            echo "=== RAW TEST SUMMARY LINES ==="
+            grep -E 'Executed [0-9]+ tests|Test Suite .* (passed|failed)|\*\* TEST (SUCCEEDED|FAILED) \*\*' "../$LOG_DIR/07-test.log" || true
+            echo
+            echo "=== RAW TEST ERROR/WARNING SUMMARY ==="
+            grep -Ein 'error:|warning:|failed|failure|succeeded|crash|timeout' "../$LOG_DIR/07-test.log" | tail -500 || true
+          } 2>&1 | tee "../$LOG_DIR/07-test-raw-summary.log"
 
           if [ "$TEST_EXIT" -ne 0 ]; then
             echo "ERROR: xcodebuild test failed with exit code $TEST_EXIT"
@@ -213,10 +494,27 @@ jobs:
 
           TEST_COUNT="$(
             grep -Eo 'Executed [0-9]+ tests' "../$LOG_DIR/07-test.log" \
-              | awk '{sum += $2} END {print sum+0}'
+              | awk '
+                  {
+                    if ($2 > max) {
+                      max = $2
+                    }
+                  }
+                  END {
+                    print max + 0
+                  }
+                '
           )"
 
-          echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT" | tee "../$ARTIFACT_DIR/test-summary.txt"
+          TEST_SUMMARY_LINE_COUNT="$(
+            grep -Eo 'Executed [0-9]+ tests' "../$LOG_DIR/07-test.log" | wc -l | tr -d ' '
+          )"
+
+          {
+            echo "TOTAL_EXECUTED_TESTS_MAX_SUMMARY=$TEST_COUNT"
+            echo "TEST_SUMMARY_LINE_COUNT=$TEST_SUMMARY_LINE_COUNT"
+            echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
+          } | tee "../$ARTIFACT_DIR/test-summary.txt"
 
           if [ "$TEST_COUNT" -lt "$MIN_EXPECTED_TESTS" ]; then
             echo "ERROR: Expected at least $MIN_EXPECTED_TESTS executed tests, got $TEST_COUNT"
@@ -228,28 +526,49 @@ jobs:
             grep -E 'Executed [0-9]+ tests, with [0-9]+ failures' "../$LOG_DIR/07-test.log" || true
             echo
             echo "RAW_TEST_LOG_CONTAINS_TEST_SUCCEEDED=YES"
-            echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT"
+            echo "TOTAL_EXECUTED_TESTS_MAX_SUMMARY=$TEST_COUNT"
+            echo "TEST_SUMMARY_LINE_COUNT=$TEST_SUMMARY_LINE_COUNT"
             echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
             echo "TEST_COUNT_OK=YES"
           } | tee "../$LOG_DIR/08-test-summary.log"
 
-      - name: Metallib scan
+      - name: Metallib and Metal artifact ultra verbose scan
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
 
           {
             echo "=== METALLIB SCAN ==="
-            echo "Searching for metallib files under repo workspace..."
-            find "$PWD" -name '*.metallib' -type f -print -exec ls -lh {} \; || true
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "PWD=$PWD"
             echo
-            echo "Searching for default.metallib..."
-            find "$PWD" -name 'default.metallib' -type f -print -exec ls -lh {} \; || true
+            echo "=== ALL .metallib FILES UNDER WORKSPACE ==="
+            find "$PWD" -name '*.metallib' -type f -print -exec ls -lh {} \; -exec shasum -a 256 {} \; || true
+            echo
+            echo "=== ALL default.metallib FILES UNDER WORKSPACE ==="
+            find "$PWD" -name 'default.metallib' -type f -print -exec ls -lh {} \; -exec shasum -a 256 {} \; || true
+            echo
+            echo "=== ALL METAL-LIKE FILES UNDER WORKSPACE ==="
+            find "$PWD" \
+              \( -name '*.metal' -o -name '*.metallib' -o -name '*.air' -o -name '*.ir' \) \
+              -type f \
+              -print \
+              -exec ls -lh {} \; || true
+            echo
+            echo "=== BUILD PRODUCTS SNAPSHOT ==="
+            find "$PWD" \
+              \( -path '*/.build/*' -o -path '*/DerivedData/*' -o -path '*/Build/*' \) \
+              -maxdepth 8 \
+              -print | sort | sed -n '1,1500p' || true
           } 2>&1 | tee "$LOG_DIR/09-metallib-scan.log"
 
           METALLIB_COUNT="$(find "$PWD" -name '*.metallib' -type f | wc -l | tr -d ' ')"
-          echo "METALLIB_COUNT=$METALLIB_COUNT" | tee "$ARTIFACT_DIR/metallib-count.txt"
+
+          {
+            echo "METALLIB_COUNT=$METALLIB_COUNT"
+          } | tee "$ARTIFACT_DIR/metallib-count.txt"
 
           if [ "$METALLIB_COUNT" -lt 1 ]; then
             echo "ERROR: no .metallib files found"
@@ -260,7 +579,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
 
           rm -rf "$SMOKE_DIR"
           mkdir -p "$SMOKE_DIR/Sources/SmokeProbe"
@@ -296,13 +616,20 @@ jobs:
 
           func fail(_ message: String) -> Never {
               print("MLX_SMOKE_FAILURE=\(message)")
+              fflush(stdout)
               exit(1)
+          }
+
+          func proof(_ key: String, _ value: Any) {
+              print("\(key)=\(value)")
           }
 
           let args = CommandLine.arguments
           let expectWrongResult = args.contains("--expect-wrong-result")
 
-          print("MLX_SMOKE_BEGIN=YES")
+          proof("MLX_SMOKE_BEGIN", "YES")
+          proof("MLX_SMOKE_ARGUMENTS", args)
+          proof("MLX_SMOKE_EXPECT_WRONG_RESULT", expectWrongResult ? "YES" : "NO")
 
           let a = MLXArray([Float(1), Float(2), Float(3)])
           let b = MLXArray([Float(10), Float(20), Float(30)])
@@ -310,15 +637,19 @@ jobs:
           eval(c)
 
           let cValues = c.asArray(Float.self)
-          print("MLX_SMOKE_RESULT=\(cValues)")
+          proof("MLX_SMOKE_VECTOR_A", [Float(1), Float(2), Float(3)])
+          proof("MLX_SMOKE_VECTOR_B", [Float(10), Float(20), Float(30)])
+          proof("MLX_SMOKE_RESULT", cValues)
 
           let expectedVector: [Float] = expectWrongResult
               ? [Float(999), Float(999), Float(999)]
               : [Float(11), Float(22), Float(33)]
 
+          proof("MLX_SMOKE_EXPECTED_VECTOR", expectedVector)
+
           if cValues != expectedVector {
               if expectWrongResult {
-                  print("NEGATIVE_CONTROL_EXPECTED_FAILURE=YES")
+                  proof("NEGATIVE_CONTROL_EXPECTED_FAILURE", "YES")
               }
               fail("vector mismatch expected \(expectedVector), got \(cValues)")
           }
@@ -328,30 +659,33 @@ jobs:
           eval(y)
 
           let yValues = y.asArray(Float.self)
-          print("MLX_MATMUL_FIRST=\(yValues[0])")
-          print("MLX_MATMUL_COUNT=\(yValues.count)")
+
+          proof("MLX_MATMUL_SHAPE_ROWS", 32)
+          proof("MLX_MATMUL_SHAPE_COLS", 32)
+          proof("MLX_MATMUL_FIRST", yValues[0])
+          proof("MLX_MATMUL_COUNT", yValues.count)
 
           if yValues.count != 1024 {
-              fail("matmul count mismatch")
+              fail("matmul count mismatch expected 1024 got \(yValues.count)")
           }
 
           if abs(yValues[0] - Float(32)) > Float(0.0001) {
-              fail("matmul first mismatch")
+              fail("matmul first mismatch expected 32.0 got \(yValues[0])")
           }
 
-          print("MLX_SMOKE_RESULT_OK=YES")
-          print("MLX_MATMUL_RESULT_OK=YES")
-          print("MLX_SMOKE_END=YES")
+          proof("MLX_SMOKE_RESULT_OK", "YES")
+          proof("MLX_MATMUL_RESULT_OK", "YES")
+          proof("MLX_SMOKE_END", "YES")
           SWIFT
 
           {
             echo "=== SMOKE PACKAGE CREATED ==="
-            find "$SMOKE_DIR" -maxdepth 4 -type f -print
+            find "$SMOKE_DIR" -maxdepth 6 -type f -print | sort
             echo
-            echo "=== Package.swift ==="
+            echo "=== SMOKE Package.swift ==="
             cat "$SMOKE_DIR/Package.swift"
             echo
-            echo "=== main.swift ==="
+            echo "=== SMOKE main.swift ==="
             cat "$SMOKE_DIR/Sources/SmokeProbe/main.swift"
           } 2>&1 | tee "$LOG_DIR/10-smoke-describe.log"
 
@@ -359,10 +693,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$SMOKE_DIR"
 
-          swift package resolve 2>&1 | tee "../$LOG_DIR/10-smoke-resolve.log"
+          {
+            echo "=== SMOKE RESOLVE INTRO ==="
+            echo "PWD=$PWD"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "=== PACKAGE FILES ==="
+            find "$PWD" -maxdepth 6 -print | sort
+          } 2>&1 | tee "../$LOG_DIR/10-smoke-resolve-intro.log"
+
+          swift package resolve -v 2>&1 | tee "../$LOG_DIR/10-smoke-resolve.log"
+          swift package describe 2>&1 | tee "../$LOG_DIR/10-smoke-describe-package.log"
+          swift package show-dependencies 2>&1 | tee "../$LOG_DIR/10-smoke-show-dependencies.log"
 
           set +e
           swift build -v 2>&1 | tee "../$LOG_DIR/10-smoke-build.log"
@@ -370,6 +717,17 @@ jobs:
           set -e
 
           echo "$SMOKE_BUILD_EXIT" | tee "../$ARTIFACT_DIR/smoke-build-exit-status.txt"
+
+          {
+            echo "=== SMOKE BUILD EXIT ==="
+            echo "SMOKE_BUILD_EXIT=$SMOKE_BUILD_EXIT"
+            echo
+            echo "=== SMOKE BUILD TREE ==="
+            find "$PWD" -maxdepth 8 -print | sort | sed -n '1,1500p'
+            echo
+            echo "=== SMOKE BUILD ERROR/WARNING SUMMARY ==="
+            grep -Ein 'error:|warning:|failed|succeeded|note:' "../$LOG_DIR/10-smoke-build.log" | tail -300 || true
+          } 2>&1 | tee "../$LOG_DIR/10-smoke-build-summary.log"
 
           if [ "$SMOKE_BUILD_EXIT" -ne 0 ]; then
             echo "ERROR: smoke build failed with exit code $SMOKE_BUILD_EXIT"
@@ -380,8 +738,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$SMOKE_DIR"
+
+          {
+            echo "=== SMOKE RUN INTRO ==="
+            echo "PWD=$PWD"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "COMMAND=swift run SmokeProbe"
+          } 2>&1 | tee "../$LOG_DIR/10-smoke-run-intro.log"
 
           set +e
           swift run SmokeProbe 2>&1 | tee "../$LOG_DIR/10-smoke-run.log"
@@ -396,6 +763,7 @@ jobs:
           fi
 
           grep -F "MLX_SMOKE_BEGIN=YES" "../$LOG_DIR/10-smoke-run.log"
+          grep -F "MLX_SMOKE_EXPECT_WRONG_RESULT=NO" "../$LOG_DIR/10-smoke-run.log"
           grep -F "MLX_SMOKE_RESULT=[11.0, 22.0, 33.0]" "../$LOG_DIR/10-smoke-run.log"
           grep -F "MLX_MATMUL_FIRST=32.0" "../$LOG_DIR/10-smoke-run.log"
           grep -F "MLX_MATMUL_COUNT=1024" "../$LOG_DIR/10-smoke-run.log"
@@ -403,12 +771,29 @@ jobs:
           grep -F "MLX_MATMUL_RESULT_OK=YES" "../$LOG_DIR/10-smoke-run.log"
           grep -F "MLX_SMOKE_END=YES" "../$LOG_DIR/10-smoke-run.log"
 
+          {
+            echo "=== SMOKE RUN SUMMARY ==="
+            echo "SMOKE_RUN_EXIT=$SMOKE_RUN_EXIT"
+            echo "SMOKE_VECTOR_RESULT_OK=YES"
+            echo "SMOKE_MATMUL_RESULT_OK=YES"
+          } | tee "../$LOG_DIR/10-smoke-run-summary.log"
+
       - name: Negative control proves harness fails bad result
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
           cd "$SMOKE_DIR"
+
+          {
+            echo "=== NEGATIVE CONTROL INTRO ==="
+            echo "PWD=$PWD"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "COMMAND=swift run SmokeProbe --expect-wrong-result"
+            echo "EXPECTED_BEHAVIOR=nonzero exit"
+          } 2>&1 | tee "../$LOG_DIR/10-negative-control-intro.log"
 
           set +e
           swift run SmokeProbe --expect-wrong-result 2>&1 | tee "../$LOG_DIR/10-negative-control.log"
@@ -422,75 +807,215 @@ jobs:
             exit 1
           fi
 
+          grep -F "MLX_SMOKE_EXPECT_WRONG_RESULT=YES" "../$LOG_DIR/10-negative-control.log"
           grep -F "NEGATIVE_CONTROL_EXPECTED_FAILURE=YES" "../$LOG_DIR/10-negative-control.log"
 
-      - name: Generate checksums
+          {
+            echo "=== NEGATIVE CONTROL SUMMARY ==="
+            echo "NEGATIVE_CONTROL_EXIT=$NEG_EXIT"
+            echo "NEGATIVE_CONTROL_PROVED_FAILURE=YES"
+          } | tee "../$LOG_DIR/10-negative-control-summary.log"
+
+      - name: Generate ultra verbose filesystem inventory
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
+          {
+            echo "=== FINAL FILESYSTEM INVENTORY ==="
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "PWD=$PWD"
+            echo
+            echo "=== TOP LEVEL ==="
+            find "$PWD" -maxdepth 2 -print | sort
+            echo
+            echo "=== LOG FILES ==="
+            find "$LOG_DIR" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort || true
+            echo
+            echo "=== ARTIFACT FILES ==="
+            find "$ARTIFACT_DIR" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort || true
+            echo
+            echo "=== RESULT BUNDLES ==="
+            find "$RESULT_BUNDLE_DIR" -maxdepth 5 -print | sort || true
+            echo
+            echo "=== MLX SWIFT SELECTED TREE ==="
+            if [ -d "$MLX_SWIFT_DIR" ]; then
+              find "$MLX_SWIFT_DIR" -maxdepth 4 -print | sort | sed -n '1,2000p'
+            else
+              echo "$MLX_SWIFT_DIR does not exist"
+            fi
+            echo
+            echo "=== SMOKE SELECTED TREE ==="
+            if [ -d "$SMOKE_DIR" ]; then
+              find "$SMOKE_DIR" -maxdepth 8 -print | sort | sed -n '1,2000p'
+            else
+              echo "$SMOKE_DIR does not exist"
+            fi
+            echo
+            echo "=== DISK SPACE FINAL ==="
+            df -h
+          } 2>&1 | tee "$LOG_DIR/11-filesystem-inventory.log"
+
+      - name: Generate checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
+          TMP_CHECKSUMS="$ARTIFACT_DIR/checksums.sha256.tmp"
+          FINAL_CHECKSUMS="$ARTIFACT_DIR/checksums.sha256"
+
+          rm -f "$TMP_CHECKSUMS" "$FINAL_CHECKSUMS"
 
           {
             echo "=== SHA256 CHECKSUMS ==="
-            shasum -a 256 "$LOG_DIR"/*.log "$ARTIFACT_DIR"/* 2>/dev/null || true
-          } | tee "$ARTIFACT_DIR/checksums.sha256"
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            find "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR" \
+              -type f \
+              ! -name 'checksums.sha256' \
+              ! -name 'checksums.sha256.tmp' \
+              -print0 \
+              | sort -z \
+              | xargs -0 shasum -a 256
+          } > "$TMP_CHECKSUMS"
 
-          test -s "$ARTIFACT_DIR/checksums.sha256"
+          mv "$TMP_CHECKSUMS" "$FINAL_CHECKSUMS"
+
+          {
+            echo "=== CHECKSUM FILE CREATED ==="
+            ls -lh "$FINAL_CHECKSUMS"
+            echo
+            cat "$FINAL_CHECKSUMS"
+          } 2>&1 | tee "$LOG_DIR/12-checksums.log"
+
+          test -s "$FINAL_CHECKSUMS"
 
       - name: Final proof summary
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
-          REPO_HEAD="$(cat "$ARTIFACT_DIR/repo-head.txt")"
-          TEST_COUNT="$(grep -Eo 'TOTAL_EXECUTED_TESTS=[0-9]+' "$ARTIFACT_DIR/test-summary.txt" | tail -1 | cut -d= -f2)"
-          METALLIB_COUNT="$(cut -d= -f2 "$ARTIFACT_DIR/metallib-count.txt")"
-          BUILD_EXIT="$(cat "$ARTIFACT_DIR/build-exit-status.txt")"
-          TEST_EXIT="$(cat "$ARTIFACT_DIR/test-exit-status.txt")"
-          SMOKE_BUILD_EXIT="$(cat "$ARTIFACT_DIR/smoke-build-exit-status.txt")"
-          SMOKE_RUN_EXIT="$(cat "$ARTIFACT_DIR/smoke-run-exit-status.txt")"
-          NEG_EXIT="$(cat "$ARTIFACT_DIR/negative-control-exit-status.txt")"
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR" "$RESULT_BUNDLE_DIR"
+
+          get_file_or_unknown() {
+            local path="$1"
+            if [ -f "$path" ]; then
+              cat "$path"
+            else
+              echo "UNKNOWN"
+            fi
+          }
+
+          get_env_value_or_unknown() {
+            local file="$1"
+            local key="$2"
+            if [ -f "$file" ]; then
+              grep -E "^${key}=" "$file" | tail -1 | cut -d= -f2- || echo "UNKNOWN"
+            else
+              echo "UNKNOWN"
+            fi
+          }
+
+          REPO_HEAD="$(get_file_or_unknown "$ARTIFACT_DIR/repo-head.txt")"
+          MLX_SWIFT_REF="$(get_env_value_or_unknown "$ARTIFACT_DIR/mlx-swift-version.env" "MLX_SWIFT_REF")"
+          MLX_SWIFT_HEAD="$(get_env_value_or_unknown "$ARTIFACT_DIR/mlx-swift-version.env" "MLX_SWIFT_HEAD")"
+          MLX_SWIFT_DESCRIBE="$(get_env_value_or_unknown "$ARTIFACT_DIR/mlx-swift-version.env" "MLX_SWIFT_DESCRIBE")"
+          TEST_COUNT="$(grep -Eo 'TOTAL_EXECUTED_TESTS_MAX_SUMMARY=[0-9]+' "$ARTIFACT_DIR/test-summary.txt" 2>/dev/null | tail -1 | cut -d= -f2 || echo UNKNOWN)"
+          MIN_EXPECTED_TESTS="$(grep -Eo 'MIN_EXPECTED_TESTS=[0-9]+' "$ARTIFACT_DIR/test-summary.txt" 2>/dev/null | tail -1 | cut -d= -f2 || echo UNKNOWN)"
+          METALLIB_COUNT="$(cut -d= -f2 "$ARTIFACT_DIR/metallib-count.txt" 2>/dev/null || echo UNKNOWN)"
+          BUILD_EXIT="$(get_file_or_unknown "$ARTIFACT_DIR/build-exit-status.txt")"
+          TEST_EXIT="$(get_file_or_unknown "$ARTIFACT_DIR/test-exit-status.txt")"
+          SMOKE_BUILD_EXIT="$(get_file_or_unknown "$ARTIFACT_DIR/smoke-build-exit-status.txt")"
+          SMOKE_RUN_EXIT="$(get_file_or_unknown "$ARTIFACT_DIR/smoke-run-exit-status.txt")"
+          NEG_EXIT="$(get_file_or_unknown "$ARTIFACT_DIR/negative-control-exit-status.txt")"
 
           {
             echo "=== FINAL SUMMARY ==="
+            echo "UTC_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
             echo "CHOSEN_SCHEME=$CHOSEN_SCHEME"
             echo
-            echo "=== PROOF SUMMARY ==="
+            echo "=== REPOSITORY PROOF SUMMARY ==="
             echo "REPO_HEAD=$REPO_HEAD"
-            echo "GITHUB_SHA=$GITHUB_SHA"
-            echo "SHA_MATCH=YES"
+            echo "GITHUB_SHA=${GITHUB_SHA:-UNKNOWN}"
+            if [ "$REPO_HEAD" = "${GITHUB_SHA:-}" ]; then
+              echo "SHA_MATCH=YES"
+            else
+              echo "SHA_MATCH=NO_OR_UNKNOWN"
+            fi
             echo
+            echo "=== MLX SWIFT SOURCE SUMMARY ==="
+            echo "MLX_SWIFT_REF=$MLX_SWIFT_REF"
+            echo "MLX_SWIFT_HEAD=$MLX_SWIFT_HEAD"
+            echo "MLX_SWIFT_DESCRIBE=$MLX_SWIFT_DESCRIBE"
+            echo
+            echo "=== SCHEME SUMMARY ==="
             echo "SCHEME=$CHOSEN_SCHEME"
-            echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=YES"
+            if [ -f "$ARTIFACT_DIR/chosen-scheme.txt" ]; then
+              echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=YES"
+            else
+              echo "SCHEME_FOUND_IN_XCODEBUILD_LIST=NO_OR_UNKNOWN"
+            fi
             echo
+            echo "=== BUILD SUMMARY ==="
             echo "XCODEBUILD_BUILD_EXIT=$BUILD_EXIT"
+            echo
+            echo "=== TEST SUMMARY ==="
             echo "XCODEBUILD_TEST_EXIT=$TEST_EXIT"
-            echo "RAW_TEST_LOG_CONTAINS_TEST_SUCCEEDED=YES"
-            echo "TOTAL_EXECUTED_TESTS=$TEST_COUNT"
+            echo "RAW_TEST_LOG_CONTAINS_TEST_SUCCEEDED=$(grep -F '** TEST SUCCEEDED **' "$LOG_DIR/07-test.log" >/dev/null 2>&1 && echo YES || echo NO_OR_UNKNOWN)"
+            echo "TOTAL_EXECUTED_TESTS_MAX_SUMMARY=$TEST_COUNT"
             echo "MIN_EXPECTED_TESTS=$MIN_EXPECTED_TESTS"
-            echo "TEST_COUNT_OK=YES"
+            if [ "$TEST_COUNT" != "UNKNOWN" ] && [ "$MIN_EXPECTED_TESTS" != "UNKNOWN" ] && [ "$TEST_COUNT" -ge "$MIN_EXPECTED_TESTS" ]; then
+              echo "TEST_COUNT_OK=YES"
+            else
+              echo "TEST_COUNT_OK=NO_OR_UNKNOWN"
+            fi
             echo
+            echo "=== METALLIB SUMMARY ==="
             echo "METALLIB_COUNT=$METALLIB_COUNT"
-            echo "METALLIB_FOUND=YES"
+            if [ "$METALLIB_COUNT" != "UNKNOWN" ] && [ "$METALLIB_COUNT" -ge 1 ]; then
+              echo "METALLIB_FOUND=YES"
+            else
+              echo "METALLIB_FOUND=NO_OR_UNKNOWN"
+            fi
             echo
+            echo "=== SMOKE SUMMARY ==="
             echo "SMOKE_BUILD_EXIT=$SMOKE_BUILD_EXIT"
             echo "SMOKE_RUN_EXIT=$SMOKE_RUN_EXIT"
-            echo "MLX_SMOKE_RESULT_OK=YES"
-            echo "MLX_MATMUL_RESULT_OK=YES"
+            echo "MLX_SMOKE_RESULT_OK=$(grep -F 'MLX_SMOKE_RESULT_OK=YES' "$LOG_DIR/10-smoke-run.log" >/dev/null 2>&1 && echo YES || echo NO_OR_UNKNOWN)"
+            echo "MLX_MATMUL_RESULT_OK=$(grep -F 'MLX_MATMUL_RESULT_OK=YES' "$LOG_DIR/10-smoke-run.log" >/dev/null 2>&1 && echo YES || echo NO_OR_UNKNOWN)"
             echo
+            echo "=== NEGATIVE CONTROL SUMMARY ==="
             echo "NEGATIVE_CONTROL_EXIT=$NEG_EXIT"
-            echo "NEGATIVE_CONTROL_PROVED_FAILURE=YES"
+            if [ "$NEG_EXIT" != "UNKNOWN" ] && [ "$NEG_EXIT" -ne 0 ]; then
+              echo "NEGATIVE_CONTROL_PROVED_FAILURE=YES"
+            else
+              echo "NEGATIVE_CONTROL_PROVED_FAILURE=NO_OR_UNKNOWN"
+            fi
             echo
+            echo "=== CHECKSUM SUMMARY ==="
             echo "CHECKSUM_FILE=$ARTIFACT_DIR/checksums.sha256"
-            echo "FINAL_STATUS=PROVEN_SUCCESS"
+            if [ -s "$ARTIFACT_DIR/checksums.sha256" ]; then
+              echo "CHECKSUM_FILE_EXISTS=YES"
+            else
+              echo "CHECKSUM_FILE_EXISTS=NO_OR_UNKNOWN"
+            fi
             echo
             echo "=== LOG FILES ==="
             find "$LOG_DIR" -maxdepth 1 -type f | sort
             echo
             echo "=== ARTIFACT FILES ==="
             find "$ARTIFACT_DIR" -maxdepth 1 -type f | sort
-          } | tee "$LOG_DIR/11-final-summary.log"
+            echo
+            echo "=== RESULT BUNDLES ==="
+            find "$RESULT_BUNDLE_DIR" -maxdepth 2 -print | sort
+          } | tee "$LOG_DIR/13-final-summary.log"
 
       - name: Upload proof artifacts
         uses: actions/upload-artifact@v4
@@ -500,3 +1025,4 @@ jobs:
           path: |
             logs/
             artifacts/
+            result-bundles/

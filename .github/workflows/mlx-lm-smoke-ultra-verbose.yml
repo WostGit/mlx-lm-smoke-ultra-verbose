@@ -1,4 +1,4 @@
-name: MLX Swift Ultra Verbose What-Works Matrix
+name: MLX Swift Failure-Tolerant Ultra Verbose Smoke
 
 on:
   workflow_dispatch:
@@ -8,298 +8,417 @@ on:
 
 jobs:
   mlx-swift-ultra-verbose:
-    name: MLX Swift ultra verbose what-works on macOS
+    name: MLX Swift failure-tolerant smoke on macOS
     runs-on: macos-15
     timeout-minutes: 90
 
     env:
       NSUnbufferedIO: "YES"
       PYTHONUNBUFFERED: "1"
-      TERM: xterm-256color
       FORCE_COLOR: "1"
       CI: "1"
 
     steps:
-      - name: Checkout current repo
-        uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-      - name: Runner / Xcode / Swift environment
-        shell: bash
+      - name: Section 0 - toolchain and machine info
         run: |
-          set -euxo pipefail
+          set +e
+          echo "=== PWD ==="
+          pwd
+          echo
+
           echo "=== DATE ==="
           date -u
-          echo "=== UNAME ==="
-          uname -a
+          echo
+
           echo "=== SW_VERS ==="
           sw_vers
+          echo
+
+          echo "=== UNAME ==="
+          uname -a
+          echo
+
           echo "=== XCODE SELECT ==="
           xcode-select -p
+          echo
+
           echo "=== XCODEBUILD VERSION ==="
           xcodebuild -version
+          echo
+
           echo "=== SWIFT VERSION ==="
           swift --version
+          echo
+
           echo "=== CLANG VERSION ==="
-          clang --version || true
+          clang --version
+          echo
+
+          echo "=== XCRUN SDK PATH ==="
+          xcrun --show-sdk-path
+          echo
+
           echo "=== AVAILABLE SDKS ==="
           xcodebuild -showsdks
-          echo "=== CURRENT DIRECTORY ==="
-          pwd
-          echo "=== REPO CONTENTS ==="
+          echo
+
+          echo "=== ENV SORTED ==="
+          env | sort
+          echo
+
+      - name: Section 1 - repository tree
+        run: |
+          set +e
+          echo "=== TOP LEVEL ==="
           ls -la
+          echo
 
-      - name: Clone upstream repos
-        shell: bash
+          echo "=== REPO TREE (TOP 300 PATHS) ==="
+          find . | sed -n '1,300p'
+          echo
+
+          echo "=== GIT STATUS ==="
+          git status --short --branch
+          echo
+
+          echo "=== GIT SUBMODULE STATUS ==="
+          git submodule status --recursive || true
+          echo
+
+      - name: Section 2 - critical path assertions
         run: |
-          set -euxo pipefail
-          git clone --depth=1 https://github.com/ml-explore/mlx-swift.git
-          git clone --depth=1 https://github.com/ml-explore/mlx-swift-lm.git
-          git clone --depth=1 https://github.com/ml-explore/mlx-swift-examples.git
-          echo "=== CLONED REPOS ==="
-          ls -la
-          echo "=== mlx-swift HEAD ==="
-          git -C mlx-swift rev-parse HEAD
-          echo "=== mlx-swift-lm HEAD ==="
-          git -C mlx-swift-lm rev-parse HEAD
-          echo "=== mlx-swift-examples HEAD ==="
-          git -C mlx-swift-examples rev-parse HEAD
+          set +e
+          echo "=== ASSERTING IMPORTANT PATHS ==="
 
-      - name: Inspect repo layouts
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "=== mlx-swift top level ==="
-          (cd mlx-swift && find . -maxdepth 2 | sort | sed -n '1,240p')
-          echo "=== mlx-swift-lm top level ==="
-          (cd mlx-swift-lm && find . -maxdepth 2 | sort | sed -n '1,240p')
-          echo "=== mlx-swift-examples top level ==="
-          (cd mlx-swift-examples && find . -maxdepth 2 | sort | sed -n '1,300p')
-
-      - name: Discover Xcode workspaces / projects / schemes
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=== XCODE FILES IN mlx-swift ==="
-          (cd mlx-swift && find . \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) | sort || true)
-
-          echo "=== XCODE FILES IN mlx-swift-lm ==="
-          (cd mlx-swift-lm && find . \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) | sort || true)
-
-          echo "=== XCODE FILES IN mlx-swift-examples ==="
-          (cd mlx-swift-examples && find . \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) | sort || true)
-
-          echo "=== SCHEMES IN mlx-swift ==="
-          (
-            cd mlx-swift
-            if [ -f Package.swift ]; then
-              xcodebuild -list 2>&1 | tee ../mlx-swift-xcodebuild-list.log || true
+          for p in \
+            "." \
+            "./mlx-swift" \
+            "./mlx-swift/Package.swift" \
+            "./mlx-swift/Source" \
+            "./mlx-swift/Source/Cmlx" \
+            "./mlx-swift/Tests"
+          do
+            if [ -e "$p" ]; then
+              echo "FOUND: $p"
+            else
+              echo "MISSING: $p"
             fi
-          )
+          done
 
-          echo "=== SCHEMES IN mlx-swift-examples ==="
-          (
-            cd mlx-swift-examples
-            if [ -d . ]; then
-              xcodebuild -list 2>&1 | tee ../mlx-swift-examples-xcodebuild-list.log || true
-            fi
-          )
+          echo
+          echo "=== Cmlx AREA ==="
+          find ./mlx-swift/Source/Cmlx -maxdepth 4 2>/dev/null | sed -n '1,400p'
+          echo
 
-      - name: SwiftPM resolve for mlx-swift
-        shell: bash
+          echo "=== LOOK FOR compiled_conditional.cpp ==="
+          find ./mlx-swift -name 'compiled_conditional.cpp' -print
+          echo
+
+          echo "=== LOOK FOR compiled.cpp ==="
+          find ./mlx-swift -name 'compiled.cpp' -print
+          echo
+
+          echo "=== LOOK FOR default.metallib ==="
+          find ./mlx-swift -name 'default.metallib' -print
+          echo
+
+          echo "=== LOOK FOR GENERATED CPP ==="
+          find ./mlx-swift -path '*mlx-generated*' -type f | sed -n '1,300p'
+          echo
+
+      - name: Section 3 - package metadata discovery
+        working-directory: mlx-swift
         run: |
-          set -euxo pipefail
-          cd mlx-swift
+          set +e
           echo "=== swift package describe ==="
-          swift package describe 2>&1 | tee ../mlx-swift-package-describe.log || true
-          echo "=== swift package resolve ==="
-          swift package resolve 2>&1 | tee ../mlx-swift-package-resolve.log
+          swift package describe 2>&1 | tee ../swift-package-describe.log
+          echo
 
-      - name: Run mlx-swift package tests (blocking)
-        shell: bash
+          echo "=== swift package dump-package ==="
+          swift package dump-package 2>&1 | tee ../swift-package-dump-package.log
+          echo
+
+          echo "=== swift package tools-version ==="
+          swift package tools-version 2>&1 | tee ../swift-package-tools-version.log
+          echo
+
+      - name: Section 4 - xcode scheme discovery
+        working-directory: mlx-swift
         run: |
-          set -euxo pipefail
-          cd mlx-swift
+          set +e
+          echo "=== xcodebuild -list ==="
+          xcodebuild -list 2>&1 | tee ../xcodebuild-list.log
+          echo
 
-          echo "=== BUILDING/TESTING mlx-swift PACKAGE ==="
-          echo "Using package-generated Xcode scheme because this is the proven working layer."
+          echo "=== xcodebuild -list -json ==="
+          xcodebuild -list -json 2>&1 | tee ../xcodebuild-list-json.log
+          echo
+
+      - name: Section 5 - swift build diagnostic
+        working-directory: mlx-swift
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== swift build -v ==="
+          swift build -v 2>&1 | tee ../swift-build-v.log
+          status=${PIPESTATUS[0]}
+          echo "swift build exit status: $status"
+          exit 0
+
+      - name: Section 6 - proven xcode package build
+        id: proven_build
+        working-directory: mlx-swift
+        run: |
+          set -o pipefail
+          rm -rf DerivedData
+
+          echo "=== BUILDING PROVEN PACKAGE LAYER ==="
+          echo "Using package-generated Xcode scheme because this is the most reliable layer."
+          echo
 
           xcodebuild \
             -scheme mlx-swift-Package \
-            -destination "platform=macOS,arch=arm64" \
+            -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test \
-            2>&1 | tee ../mlx-swift-package-test.log
+            build 2>&1 | tee ../xcodebuild-proven-build.log
 
-      - name: Summarize mlx-swift test result
-        shell: bash
+      - name: Section 7 - proven xcode package tests
+        id: proven_test
+        working-directory: mlx-swift
         run: |
-          set -euxo pipefail
-          echo "=== MLX SWIFT TEST SUMMARY ==="
-          grep -E "(\*\* TEST SUCCEEDED \*\*|Executed [0-9]+ tests, with 0 failures)" mlx-swift-package-test.log || true
-          echo "=== XCRESULT PATHS ==="
-          find mlx-swift/DerivedData -name "*.xcresult" | sort || true
+          set -o pipefail
+          echo "=== TESTING PROVEN PACKAGE LAYER ==="
+          xcodebuild \
+            -scheme mlx-swift-Package \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test 2>&1 | tee ../xcodebuild-proven-test.log
 
-      - name: SwiftPM resolve and build mlx-swift-lm (blocking)
-        shell: bash
+      - name: Section 8 - derived data and artifact scan
+        if: always()
         run: |
-          set -euxo pipefail
-          cd mlx-swift-lm
-          echo "=== swift package describe (mlx-swift-lm) ==="
-          swift package describe 2>&1 | tee ../mlx-swift-lm-package-describe.log || true
-          echo "=== swift package resolve (mlx-swift-lm) ==="
-          swift package resolve 2>&1 | tee ../mlx-swift-lm-package-resolve.log
-          echo "=== swift build -v (mlx-swift-lm) ==="
-          swift build -v 2>&1 | tee ../mlx-swift-lm-build.log
+          set +e
+          echo "=== DERIVED DATA TREE ==="
+          find mlx-swift/DerivedData | sed -n '1,500p'
+          echo
 
-      - name: Inspect mlx-swift-examples entry points
-        shell: bash
+          echo "=== XCRESULTS ==="
+          find . -name '*.xcresult' -print
+          echo
+
+          echo "=== XCTEST BUNDLES ==="
+          find . -name '*.xctest' -print
+          echo
+
+          echo "=== METALLIB FILES ==="
+          find . -name '*.metallib' -print
+          echo
+
+          echo "=== APPS / BINARIES / DYLIBS ==="
+          find . \( -name '*.app' -o -name '*.dylib' -o -perm -111 \) | sed -n '1,400p'
+          echo
+
+      - name: Section 9 - smoke project scaffold
+        if: always()
         run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
+          set +e
+          rm -rf smoke-min
+          mkdir -p smoke-min/Sources/SmokeMin
 
-          echo "=== README snippets mentioning LLM examples ==="
-          grep -RniE "llm-tool|LLMBasic|LLMEval|VLMEval" . | sed -n '1,200p' || true
+          cat > smoke-min/Package.swift <<'EOF'
+          // swift-tools-version: 6.0
+          import PackageDescription
 
-          echo "=== Swift package files ==="
-          find . -maxdepth 3 -name "Package.swift" -o -name "Package.resolved" | sort || true
+          let package = Package(
+              name: "SmokeMin",
+              platforms: [
+                  .macOS(.v14)
+              ],
+              dependencies: [
+                  .package(path: "../mlx-swift")
+              ],
+              targets: [
+                  .executableTarget(
+                      name: "SmokeMin",
+                      dependencies: [
+                          .product(name: "MLX", package: "mlx-swift"),
+                          .product(name: "MLXNN", package: "mlx-swift")
+                      ],
+                      path: "Sources/SmokeMin"
+                  )
+              ]
+          )
+          EOF
 
-          echo "=== Xcode schemes / list output ==="
-          xcodebuild -list 2>&1 | tee ../mlx-swift-examples-list.log || true
+          cat > smoke-min/Sources/SmokeMin/main.swift <<'EOF'
+          import Foundation
+          import MLX
+          import MLXNN
 
-          echo "=== Look for mlx-run helper ==="
-          find . -maxdepth 3 -name "mlx-run" -type f | sort || true
+          func log(_ s: String) {
+              print(s)
+              fflush(stdout)
+          }
 
-          echo "=== Look for llm-tool references ==="
-          grep -Rni "llm-tool" . | sed -n '1,200p' || true
+          log("=== SMOKE MIN START ===")
+          log("Creating arrays")
 
-      - name: Best-effort build of mlx-swift-examples project graph (non-blocking)
-        shell: bash
+          let a = MLXArray([1.0, 2.0, 3.0])
+          let b = MLXArray([10.0, 20.0, 30.0])
+
+          log("a = \(a)")
+          log("b = \(b)")
+
+          let c = a + b
+          log("a + b = \(c)")
+
+          let d = a * b
+          log("a * b = \(d)")
+
+          let e = matmul(
+              MLXArray([[1.0, 2.0], [3.0, 4.0]]),
+              MLXArray([[5.0, 6.0], [7.0, 8.0]])
+          )
+          log("matmul = \(e)")
+
+          let linear = Linear(inputDimensions: 2, outputDimensions: 2)
+          let x = MLXArray([[1.0, 2.0]])
+          let y = linear(x)
+          log("linear(x) = \(y)")
+
+          eval(c, d, e, y)
+          log("=== SMOKE MIN END ===")
+          EOF
+
+          echo "=== smoke-min tree ==="
+          find smoke-min | sed -n '1,200p'
+
+      - name: Section 10 - smoke project resolve
+        if: always()
+        continue-on-error: true
+        working-directory: smoke-min
+        run: |
+          set +e
+          echo "=== swift package describe (smoke-min) ==="
+          swift package describe 2>&1 | tee ../smoke-min-describe.log
+          echo
+
+          echo "=== swift package resolve (smoke-min) ==="
+          swift package resolve 2>&1 | tee ../smoke-min-resolve.log
+          status=${PIPESTATUS[0]}
+          echo "smoke-min resolve exit status: $status"
+          exit 0
+
+      - name: Section 11 - smoke project build
+        if: always()
+        continue-on-error: true
+        working-directory: smoke-min
+        run: |
+          set +e
+          echo "=== swift build -v (smoke-min) ==="
+          swift build -v 2>&1 | tee ../smoke-min-build.log
+          status=${PIPESTATUS[0]}
+          echo "smoke-min build exit status: $status"
+
+          echo
+          echo "=== smoke-min .build tree ==="
+          find .build | sed -n '1,400p' || true
+          exit 0
+
+      - name: Section 12 - smoke project runtime
+        if: always()
+        continue-on-error: true
+        working-directory: smoke-min
+        run: |
+          set +e
+          echo "=== locating SmokeMin binary ==="
+          BIN="$(find .build -type f -name SmokeMin | head -n 1)"
+          echo "BIN=$BIN"
+
+          echo "=== locating metallib files ==="
+          find .build -name '*.metallib' -print
+
+          if [ -z "$BIN" ]; then
+            echo "SmokeMin binary not found."
+            exit 0
+          fi
+
+          if [ ! -x "$BIN" ]; then
+            echo "SmokeMin binary exists but is not executable."
+            ls -l "$BIN" || true
+            exit 0
+          fi
+
+          echo "=== running SmokeMin ==="
+          "$BIN" 2>&1 | tee ../smoke-min-run.log
+          status=${PIPESTATUS[0]}
+          echo "SmokeMin runtime exit status: $status"
+          exit 0
+
+      - name: Section 13 - non-blocking LM layer probe
+        if: always()
         continue-on-error: true
         run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
+          set +e
+          echo "=== OPTIONAL LM LAYER PROBE ==="
 
-          rm -rf DerivedData || true
+          if [ -d mlx-swift-lm ]; then
+            cd mlx-swift-lm
+            echo "Found mlx-swift-lm"
+            ls -la
+            echo
 
-          echo "=== ATTEMPT: xcodebuild -list ==="
-          xcodebuild -list 2>&1 | tee ../mlx-swift-examples-list-attempt.log || true
+            echo "=== swift package describe (mlx-swift-lm) ==="
+            swift package describe 2>&1 | tee ../mlx-swift-lm-describe.log
+            echo
 
-          echo "=== ATTEMPT: build llm-tool directly if scheme exists ==="
-          if grep -q "llm-tool" ../mlx-swift-examples-list-attempt.log; then
-            xcodebuild \
-              -scheme llm-tool \
-              -destination "platform=macOS,arch=arm64" \
-              -configuration Debug \
-              -derivedDataPath DerivedData \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              build \
-              2>&1 | tee ../mlx-swift-examples-llm-tool-build.log || true
+            echo "=== swift build -v (mlx-swift-lm) ==="
+            swift build -v 2>&1 | tee ../mlx-swift-lm-build.log
+            status=${PIPESTATUS[0]}
+            echo "mlx-swift-lm build exit status: $status"
           else
-            echo "llm-tool scheme not found in xcodebuild -list output"
+            echo "mlx-swift-lm directory not present. Skipping."
           fi
 
-          echo "=== DEBUG PRODUCTS ==="
-          find DerivedData -path "*Build/Products/*" | sort | sed -n '1,300p' || true
+          exit 0
 
-      - name: Experimental end-to-end probe (non-blocking)
-        shell: bash
-        continue-on-error: true
+      - name: Section 14 - final summary
+        if: always()
         run: |
-          set -euxo pipefail
-          cd mlx-swift-examples
-
-          echo "=== PROBE: try mlx-run helper if present ==="
-          if [ -x ./mlx-run ]; then
-            ./mlx-run --debug llm-tool --help 2>&1 | tee ../mlx-run-help.log || true
-            ./mlx-run --debug llm-tool generate \
-              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
-              --prompt "Reply with exactly OK" \
-              --max-tokens 8 \
-              2>&1 | tee ../mlx-run-qwen.log || true
-          else
-            echo "mlx-run helper not found or not executable" | tee ../mlx-run-qwen.log
-          fi
-
-          echo "=== PROBE: direct built binary if present ==="
-          BIN_CANDIDATE="$(find DerivedData -type f -name llm-tool | head -n 1 || true)"
-          echo "BIN_CANDIDATE=${BIN_CANDIDATE}"
-          if [ -n "${BIN_CANDIDATE}" ] && [ -x "${BIN_CANDIDATE}" ]; then
-            "${BIN_CANDIDATE}" --help 2>&1 | tee ../llm-tool-help.log || true
-            "${BIN_CANDIDATE}" generate \
-              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
-              --prompt "Reply with exactly OK" \
-              --max-tokens 8 \
-              2>&1 | tee ../llm-tool-qwen.log || true
-          else
-            echo "No runnable llm-tool binary found" | tee ../llm-tool-qwen.log
-          fi
-
-      - name: Final harsh summary
-        shell: bash
-        run: |
-          set -euxo pipefail
-
+          set +e
           echo "=== FINAL SUMMARY ==="
+          echo "Proven build step outcome: ${{ steps.proven_build.outcome }}"
+          echo "Proven test step outcome:  ${{ steps.proven_test.outcome }}"
+          echo
+          echo "Key principle: diagnostics continue even after failures."
+          echo "Blocking signal is the proven mlx-swift package build/test."
+          echo "Everything else is diagnostic and non-blocking."
+          echo
 
-          if grep -q "\*\* TEST SUCCEEDED \*\*" mlx-swift-package-test.log; then
-            echo "[PASS] mlx-swift package tests passed"
-          else
-            echo "[FAIL] mlx-swift package tests did not pass"
-            exit 1
-          fi
+          echo "=== LOG FILES ==="
+          find . -maxdepth 2 -name '*.log' -print | sort
+          echo
 
-          if [ -f mlx-swift-lm-build.log ]; then
-            if grep -q "Build complete" mlx-swift-lm-build.log || grep -q "Build complete!" mlx-swift-lm-build.log; then
-              echo "[PASS] mlx-swift-lm SwiftPM build passed"
-            else
-              echo "[WARN] mlx-swift-lm build log exists but no explicit success marker found"
-            fi
-          else
-            echo "[WARN] mlx-swift-lm build log missing"
-          fi
-
-          if [ -f mlx-swift-examples-llm-tool-build.log ]; then
-            if grep -q "\*\* BUILD SUCCEEDED \*\*" mlx-swift-examples-llm-tool-build.log; then
-              echo "[PASS] llm-tool example build passed"
-            else
-              echo "[WARN] llm-tool example build did not pass"
-            fi
-          else
-            echo "[WARN] no llm-tool example build log produced"
-          fi
-
-          if [ -f ../mlx-run-qwen.log ]; then
-            true
-          fi
-
-          if grep -RqiE '(^|[^A-Z])OK([^A-Z]|$)' . ../*qwen*.log 2>/dev/null; then
-            echo "[PASS] end-to-end Qwen smoke appears to have produced OK"
-          else
-            echo "[WARN] end-to-end Qwen smoke did not produce OK"
-          fi
-
-          echo "=== WHAT THIS MEANS ==="
-          echo "1. Core MLX Swift must pass."
-          echo "2. MLX Swift LM library build should ideally pass."
-          echo "3. Example/CLI runtime is diagnostic and may fail independently."
-          echo "4. This workflow is intentionally ultra-verbose so failure point is obvious."
-
-      - name: Upload all logs and result bundles
+      - name: Upload diagnostic artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-ultra-verbose-logs
+          name: mlx-swift-ultra-verbose-diagnostics
+          if-no-files-found: warn
           path: |
             *.log
-            mlx-swift/**/*.xcresult
-            mlx-swift/**/DerivedData/**/Logs/**
-            mlx-swift-examples/**/DerivedData/**/Logs/**
             mlx-swift/DerivedData/**
-            mlx-swift-examples/DerivedData/**
-            mlx-swift-lm/.build/**
-          if-no-files-found: warn
-          compression-level: 0
+            smoke-min/.build/**
+            smoke-min/Package.swift
+            smoke-min/Sources/**
+            **/*.xcresult

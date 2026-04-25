@@ -1,4 +1,4 @@
-name: MLX Swift Dynamic Scheme Probe Ultra Verbose
+name: MLX Swift Repro And Diff Ultra Verbose
 
 on:
   workflow_dispatch:
@@ -7,10 +7,10 @@ on:
   pull_request:
 
 jobs:
-  mlx-swift-probe:
-    name: MLX Swift dynamic scheme probe on macOS
+  repro-and-diff:
+    name: Reproduce prior pass and diff against failing path on macOS
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
       NSUnbufferedIO: "YES"
@@ -24,213 +24,380 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Toolchain info
+      - name: Section 0 - Toolchain and machine info
+        shell: bash
         run: |
           set +e
-          echo "=== DATE ==="
-          date -u
-          echo
+          mkdir -p logs artifacts
 
-          echo "=== sw_vers ==="
-          sw_vers
-          echo
+          {
+            echo "=== DATE UTC ==="
+            date -u
+            echo
 
-          echo "=== uname ==="
-          uname -a
-          echo
+            echo "=== PWD ==="
+            pwd
+            echo
 
-          echo "=== xcode-select ==="
-          xcode-select -p
-          echo
+            echo "=== TOP LEVEL ==="
+            ls -la
+            echo
 
-          echo "=== xcodebuild -version ==="
-          xcodebuild -version
-          echo
+            echo "=== sw_vers ==="
+            sw_vers
+            echo
 
-          echo "=== swift --version ==="
-          swift --version
-          echo
+            echo "=== uname -a ==="
+            uname -a
+            echo
 
-          echo "=== xcrun --show-sdk-path ==="
-          xcrun --show-sdk-path
-          echo
+            echo "=== xcode-select -p ==="
+            xcode-select -p
+            echo
 
-      - name: Clone mlx-swift
+            echo "=== xcodebuild -version ==="
+            xcodebuild -version
+            echo
+
+            echo "=== xcodebuild -showsdks ==="
+            xcodebuild -showsdks
+            echo
+
+            echo "=== swift --version ==="
+            swift --version
+            echo
+
+            echo "=== clang --version ==="
+            clang --version
+            echo
+
+            echo "=== xcrun --show-sdk-path ==="
+            xcrun --show-sdk-path
+            echo
+
+            echo "=== env | sort ==="
+            env | sort
+            echo
+          } | tee logs/00-toolchain.log
+
+      - name: Section 1 - Clone mlx-swift fresh
+        shell: bash
         run: |
           set -euxo pipefail
           rm -rf mlx-swift
           git clone --depth=1 https://github.com/ml-explore/mlx-swift.git mlx-swift
 
-          echo "=== TOP LEVEL ==="
-          ls -la
-          echo
+          {
+            echo "=== ROOT TREE ==="
+            find . -maxdepth 2 | sed -n '1,400p'
+            echo
 
-          echo "=== MLX SWIFT TOP LEVEL ==="
-          ls -la mlx-swift
-          echo
+            echo "=== MLX-SWIFT TOP LEVEL ==="
+            ls -la mlx-swift
+            echo
 
-      - name: Assert important paths
+            echo "=== MLX-SWIFT GIT HEAD ==="
+            cd mlx-swift
+            git rev-parse HEAD
+            git log -1 --decorate --stat
+          } | tee logs/01-clone.log
+
+      - name: Section 2 - Repository truth dump
+        shell: bash
         run: |
           set +e
-          echo "=== IMPORTANT PATHS ==="
-          for p in \
-            "./mlx-swift" \
-            "./mlx-swift/Package.swift" \
-            "./mlx-swift/Source" \
-            "./mlx-swift/Source/Cmlx" \
-            "./mlx-swift/Tests"
-          do
-            if [ -e "$p" ]; then
-              echo "FOUND: $p"
-            else
-              echo "MISSING: $p"
-            fi
-          done
-          echo
+          {
+            echo "=== IMPORTANT PATH ASSERTIONS ==="
+            for p in \
+              "./mlx-swift" \
+              "./mlx-swift/Package.swift" \
+              "./mlx-swift/Source" \
+              "./mlx-swift/Source/Cmlx" \
+              "./mlx-swift/Tests" \
+              "./mlx-swift/Source/Cmlx/mlx-conditional/compiled_conditional.cpp"
+            do
+              if [ -e "$p" ]; then
+                echo "FOUND: $p"
+              else
+                echo "MISSING: $p"
+              fi
+            done
+            echo
 
-          echo "=== LOOK FOR compiled_conditional.cpp ==="
-          find ./mlx-swift -name 'compiled_conditional.cpp' -print
-          echo
+            echo "=== FIRST 600 PATHS UNDER mlx-swift ==="
+            find ./mlx-swift | sed -n '1,600p'
+            echo
 
-          echo "=== LOOK FOR compiled.cpp ==="
-          find ./mlx-swift -name 'compiled.cpp' -print
-          echo
+            echo "=== FIND compiled_conditional.cpp ==="
+            find ./mlx-swift -name 'compiled_conditional.cpp' -print
+            echo
 
-      - name: Package metadata
+            echo "=== FIND compiled.cpp ==="
+            find ./mlx-swift -name 'compiled.cpp' -print
+            echo
+
+            echo "=== FIND default.metallib ==="
+            find ./mlx-swift -name 'default.metallib' -print
+            echo
+
+            echo "=== GREP Package.swift for exclude and Cmlx ==="
+            grep -nE 'exclude:|Cmlx|compiled_conditional|compiled\.cpp' ./mlx-swift/Package.swift || true
+            echo
+
+            echo "=== Package.swift HEAD 400 lines ==="
+            sed -n '1,400p' ./mlx-swift/Package.swift
+            echo
+          } | tee logs/02-repo-truth.log
+
+      - name: Section 3 - SwiftPM metadata
+        shell: bash
         working-directory: mlx-swift
         run: |
           set +e
-          echo "=== swift package describe ==="
-          swift package describe 2>&1 | tee ../swift-package-describe.log
-          echo
+          swift package describe 2>&1 | tee ../logs/03-swift-package-describe.log
+          swift package dump-package 2>&1 | tee ../logs/03-swift-package-dump-package.log
+          swift package tools-version 2>&1 | tee ../logs/03-swift-package-tools-version.log
+          swift package resolve 2>&1 | tee ../logs/03-swift-package-resolve.log
+          swift build -v 2>&1 | tee ../logs/03-swift-build-v.log
+          exit 0
 
-          echo "=== swift package dump-package ==="
-          swift package dump-package 2>&1 | tee ../swift-package-dump-package.log
-          echo
-
-          echo "=== swift package tools-version ==="
-          swift package tools-version 2>&1 | tee ../swift-package-tools-version.log
-          echo
-
-      - name: Discover Xcode schemes
-        id: discover
+      - name: Section 4 - Xcode scheme discovery
+        id: schemes
+        shell: bash
         working-directory: mlx-swift
         run: |
           set -o pipefail
-          xcodebuild -list -json 2>&1 | tee ../xcodebuild-list-json.log
+          xcodebuild -list 2>&1 | tee ../logs/04-xcodebuild-list.log
+          xcodebuild -list -json 2>&1 | tee ../logs/04-xcodebuild-list-json.log
 
-          python3 - <<'PY' > ../detected_scheme.txt
-          import json
+          python3 - <<'PY'
+          import json, os
 
-          path = "../xcodebuild-list-json.log"
-          text = open(path, "r", encoding="utf-8").read()
+          txt = open("../logs/04-xcodebuild-list-json.log", "r", encoding="utf-8").read()
+          start = txt.find("{")
+          schemes = []
+          if start != -1:
+              try:
+                  obj = json.loads(txt[start:])
+                  root = obj.get("project") or obj.get("workspace") or {}
+                  schemes = root.get("schemes", []) or []
+              except Exception:
+                  schemes = []
 
-          start = text.find("{")
-          if start == -1:
-              print("")
-              raise SystemExit(0)
+          with open("../artifacts/schemes.txt", "w", encoding="utf-8") as f:
+              for s in schemes:
+                  f.write(s + "\n")
 
-          try:
-              data = json.loads(text[start:])
-          except Exception:
-              print("")
-              raise SystemExit(0)
+          preferred_repro = "MLXSwiftPackageTests"
+          preferred_current = "mlx-swift-Package"
 
-          workspace = data.get("workspace", data.get("project", {}))
-          schemes = workspace.get("schemes", []) if isinstance(workspace, dict) else []
+          repro = preferred_repro if preferred_repro in schemes else ""
+          current = preferred_current if preferred_current in schemes else ""
 
-          preferred = [
-              "MLXSwiftPackageTests",
-              "mlx-swift-Package",
-              "MLXTests",
-          ]
+          # If historic scheme is absent, keep it blank on purpose.
+          # If current scheme is absent, fall back to first scheme for diagnostics.
+          if not current and schemes:
+              current = schemes[0]
 
-          chosen = ""
-          for name in preferred:
-              if name in schemes:
-                  chosen = name
-                  break
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"REPRO_SCHEME={repro}\n")
+              f.write(f"CURRENT_SCHEME={current}\n")
 
-          if not chosen and schemes:
-              chosen = schemes[0]
-
-          print(chosen)
+          print("Detected schemes:", schemes)
+          print("REPRO_SCHEME =", repro)
+          print("CURRENT_SCHEME =", current)
           PY
 
-          echo "=== RAW SCHEME LIST ==="
-          cat ../xcodebuild-list-json.log
-          echo
-
-          SCHEME="$(cat ../detected_scheme.txt)"
-          echo "DETECTED_SCHEME=$SCHEME" | tee -a "$GITHUB_ENV"
-
-          if [ -z "$SCHEME" ]; then
-            echo "No Xcode scheme detected."
-          else
-            echo "Chosen scheme: $SCHEME"
-          fi
-
-      - name: SwiftPM build diagnostic
+      - name: Section 5 - Reproduce candidate historic successful path
+        id: repro_path
+        if: env.REPRO_SCHEME != ''
+        shell: bash
         working-directory: mlx-swift
         continue-on-error: true
         run: |
           set +e
-          echo "=== swift build -v ==="
-          swift build -v 2>&1 | tee ../swift-build-v.log
-          status=${PIPESTATUS[0]}
-          echo "swift build exit status: $status"
-          exit 0
+          rm -rf DerivedDataRepro
 
-      - name: Build chosen scheme
-        id: build_scheme
-        if: env.DETECTED_SCHEME != ''
-        working-directory: mlx-swift
-        continue-on-error: true
-        run: |
-          set +e
-          rm -rf DerivedData
-
-          echo "=== BUILDING CHOSEN SCHEME ==="
-          echo "Scheme: $DETECTED_SCHEME"
-          echo
+          {
+            echo "=== REPRO PATH ==="
+            echo "Attempting candidate historic successful path."
+            echo "SCHEME=$REPRO_SCHEME"
+            echo "COMMAND:"
+            echo "xcodebuild -scheme \"$REPRO_SCHEME\" -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedDataRepro CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test"
+            echo
+          } | tee ../logs/05-repro-intro.log
 
           xcodebuild \
-            -scheme "$DETECTED_SCHEME" \
+            -scheme "$REPRO_SCHEME" \
             -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedData \
+            -derivedDataPath DerivedDataRepro \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee ../xcodebuild-chosen-build.log
+            test 2>&1 | tee ../logs/05-repro-xcodebuild.log
 
           status=${PIPESTATUS[0]}
-          echo "chosen scheme build exit status: $status"
+          echo "REPRO_EXIT_STATUS=$status" | tee ../artifacts/repro-exit-status.txt
           exit 0
 
-      - name: Test chosen scheme
-        id: test_scheme
-        if: env.DETECTED_SCHEME != ''
+      - name: Section 5b - Repro path absent
+        if: env.REPRO_SCHEME == ''
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== REPRO PATH SKIPPED ==="
+            echo "Candidate historic scheme MLXSwiftPackageTests is not present in this clone/layout."
+            echo "This itself is a useful diff signal."
+          } | tee logs/05-repro-missing.log
+
+      - name: Section 6 - Run current failing path
+        id: current_path
+        if: env.CURRENT_SCHEME != ''
+        shell: bash
         working-directory: mlx-swift
         continue-on-error: true
         run: |
           set +e
-          echo "=== TESTING CHOSEN SCHEME ==="
-          echo "Scheme: $DETECTED_SCHEME"
-          echo
+          rm -rf DerivedDataCurrent
+
+          {
+            echo "=== CURRENT PATH ==="
+            echo "Running current chosen path."
+            echo "SCHEME=$CURRENT_SCHEME"
+            echo "COMMAND:"
+            echo "xcodebuild -scheme \"$CURRENT_SCHEME\" -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedDataCurrent CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test"
+            echo
+          } | tee ../logs/06-current-intro.log
 
           xcodebuild \
-            -scheme "$DETECTED_SCHEME" \
+            -scheme "$CURRENT_SCHEME" \
             -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedData \
+            -derivedDataPath DerivedDataCurrent \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | tee ../xcodebuild-chosen-test.log
+            test 2>&1 | tee ../logs/06-current-xcodebuild.log
 
           status=${PIPESTATUS[0]}
-          echo "chosen scheme test exit status: $status"
+          echo "CURRENT_EXIT_STATUS=$status" | tee ../artifacts/current-exit-status.txt
           exit 0
 
-      - name: Minimal executable scaffold
+      - name: Section 7 - Extract first errors and key signals
         if: always()
+        shell: bash
+        run: |
+          set +e
+
+          python3 - <<'PY'
+          import os
+          import re
+
+          pairs = [
+              ("repro", "logs/05-repro-xcodebuild.log"),
+              ("current", "logs/06-current-xcodebuild.log"),
+          ]
+
+          os.makedirs("artifacts", exist_ok=True)
+
+          for label, path in pairs:
+              out = [f"=== ANALYSIS FOR {label.upper()} ==="]
+              if not os.path.exists(path):
+                  out.append("log missing")
+                  open(f"artifacts/{label}-analysis.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
+                  continue
+
+              txt = open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
+
+              invalid = [line for line in txt if "Invalid Exclude" in line]
+              fatal = [line for line in txt if "fatal error:" in line]
+              build_failed = [line for line in txt if "** BUILD FAILED **" in line]
+              test_failed = [line for line in txt if "** TEST FAILED **" in line]
+              scheme_missing = [line for line in txt if "does not contain a scheme named" in line]
+              compiled_missing = [line for line in txt if "compiled.cpp" in line]
+              success_tests = [line for line in txt if "Executed " in line and "tests" in line and "0 failures" in line]
+
+              out.append(f"invalid exclude count: {len(invalid)}")
+              out.append(f"fatal error count: {len(fatal)}")
+              out.append(f"build failed markers: {len(build_failed)}")
+              out.append(f"test failed markers: {len(test_failed)}")
+              out.append(f"missing scheme markers: {len(scheme_missing)}")
+              out.append(f"compiled.cpp mentions: {len(compiled_missing)}")
+              out.append(f'successful test summary markers: {len(success_tests)}')
+              out.append("")
+
+              if invalid:
+                  out.append("FIRST 20 INVALID EXCLUDE LINES:")
+                  out.extend(invalid[:20])
+                  out.append("")
+              if fatal:
+                  out.append("FIRST 20 FATAL ERROR LINES:")
+                  out.extend(fatal[:20])
+                  out.append("")
+              if scheme_missing:
+                  out.append("SCHEME-MISSING LINES:")
+                  out.extend(scheme_missing[:20])
+                  out.append("")
+              if success_tests:
+                  out.append("SUCCESS TEST SUMMARY LINES:")
+                  out.extend(success_tests[:20])
+                  out.append("")
+
+              open(f"artifacts/{label}-analysis.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
+          PY
+
+          {
+            echo "=== REPRO ANALYSIS ==="
+            cat artifacts/repro-analysis.txt 2>/dev/null || true
+            echo
+            echo "=== CURRENT ANALYSIS ==="
+            cat artifacts/current-analysis.txt 2>/dev/null || true
+            echo
+          } | tee logs/07-analysis-summary.log
+
+      - name: Section 8 - Diff repro and current logs
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== DIFF OF REPRO VS CURRENT LOGS ==="
+            if [ -f logs/05-repro-xcodebuild.log ] && [ -f logs/06-current-xcodebuild.log ]; then
+              diff -u logs/05-repro-xcodebuild.log logs/06-current-xcodebuild.log | sed -n '1,800p'
+            else
+              echo "One or both logs are missing, so full diff is unavailable."
+            fi
+            echo
+          } | tee logs/08-repro-vs-current-diff.log
+
+      - name: Section 9 - DerivedData truth dump
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== REPRO DERIVED DATA TREE ==="
+            find mlx-swift/DerivedDataRepro | sed -n '1,800p' || true
+            echo
+
+            echo "=== CURRENT DERIVED DATA TREE ==="
+            find mlx-swift/DerivedDataCurrent | sed -n '1,800p' || true
+            echo
+
+            echo "=== XCRESULTS ==="
+            find . -name '*.xcresult' -print
+            echo
+
+            echo "=== XCTEST BUNDLES ==="
+            find . -name '*.xctest' -print
+            echo
+
+            echo "=== METALLIB FILES ==="
+            find . -name '*.metallib' -print
+            echo
+          } | tee logs/09-deriveddata.log
+
+      - name: Section 10 - Minimal SwiftPM smoke scaffold
+        if: always()
+        shell: bash
         run: |
           set +e
           rm -rf smoke-min
@@ -281,85 +448,88 @@ jobs:
           log("a + b = \(a + b)")
           log("a * b = \(a * b)")
 
-          let e = matmul(
+          let m = matmul(
               MLXArray([[1.0, 2.0], [3.0, 4.0]]),
               MLXArray([[5.0, 6.0], [7.0, 8.0]])
           )
-          log("matmul = \(e)")
+          log("matmul = \(m)")
 
           let linear = Linear(inputDimensions: 2, outputDimensions: 2)
           let y = linear(MLXArray([[1.0, 2.0]]))
           log("linear = \(y)")
 
-          eval(e, y)
+          eval(m, y)
           log("=== SMOKE MIN END ===")
           EOF
 
-      - name: Build minimal executable
-        if: always()
-        continue-on-error: true
-        working-directory: smoke-min
-        run: |
-          set +e
-          swift build -v 2>&1 | tee ../smoke-min-build.log
-          status=${PIPESTATUS[0]}
-          echo "smoke-min build exit status: $status"
-          exit 0
+          {
+            echo "=== smoke-min tree ==="
+            find smoke-min | sed -n '1,300p'
+          } | tee logs/10-smoke-min-scaffold.log
 
-      - name: Run minimal executable
+      - name: Section 11 - Build and run minimal SwiftPM smoke
         if: always()
-        continue-on-error: true
+        shell: bash
         working-directory: smoke-min
+        continue-on-error: true
         run: |
           set +e
+          swift package describe 2>&1 | tee ../logs/11-smoke-min-describe.log
+          swift package resolve 2>&1 | tee ../logs/11-smoke-min-resolve.log
+          swift build -v 2>&1 | tee ../logs/11-smoke-min-build.log
+
           BIN="$(find .build -type f -name SmokeMin | head -n 1)"
-          echo "BIN=$BIN" | tee ../smoke-min-run.log
-
-          echo "=== metallib files ===" | tee -a ../smoke-min-run.log
-          find .build -name '*.metallib' -print | tee -a ../smoke-min-run.log
+          echo "BIN=$BIN" | tee ../logs/11-smoke-min-run.log
+          echo "=== .build metallib files ===" | tee -a ../logs/11-smoke-min-run.log
+          find .build -name '*.metallib' -print | tee -a ../logs/11-smoke-min-run.log
 
           if [ -n "$BIN" ] && [ -x "$BIN" ]; then
-            "$BIN" 2>&1 | tee -a ../smoke-min-run.log
+            "$BIN" 2>&1 | tee -a ../logs/11-smoke-min-run.log
           else
-            echo "SmokeMin binary missing or not executable" | tee -a ../smoke-min-run.log
+            echo "SmokeMin binary missing or not executable" | tee -a ../logs/11-smoke-min-run.log
           fi
 
           exit 0
 
-      - name: Dump artifacts and logs
+      - name: Section 12 - Final summary
         if: always()
+        shell: bash
         run: |
           set +e
-          echo "=== XCRESULTS ==="
-          find . -name '*.xcresult' -print
-          echo
+          {
+            echo "=== FINAL SUMMARY ==="
+            echo "REPRO_SCHEME=${REPRO_SCHEME:-}"
+            echo "CURRENT_SCHEME=${CURRENT_SCHEME:-}"
+            echo
 
-          echo "=== XCTEST BUNDLES ==="
-          find . -name '*.xctest' -print
-          echo
+            echo "Repro path objective:"
+            echo "Try to reproduce the earlier reported strong pass path."
+            echo
 
-          echo "=== METALLIB FILES ==="
-          find . -name '*.metallib' -print
-          echo
+            echo "Current path objective:"
+            echo "Run the current package scheme and compare behavior."
+            echo
 
-          echo "=== DERIVEDDATA TREE ==="
-          find mlx-swift/DerivedData | sed -n '1,600p' || true
-          echo
+            echo "Log files:"
+            find logs -type f | sort
+            echo
 
-          echo "=== LOG FILES ==="
-          find . -maxdepth 2 -name '*.log' -print | sort
-          echo
+            echo "Artifact files:"
+            find artifacts -type f | sort
+            echo
+          } | tee logs/12-final-summary.log
 
-      - name: Upload artifacts
+      - name: Upload diagnostic artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-dynamic-probe-diagnostics
+          name: mlx-swift-repro-and-diff-diagnostics
           if-no-files-found: warn
           path: |
-            *.log
-            detected_scheme.txt
-            mlx-swift/DerivedData/**
+            logs/**
+            artifacts/**
+            mlx-swift/DerivedDataRepro/**
+            mlx-swift/DerivedDataCurrent/**
             smoke-min/.build/**
             smoke-min/Package.swift
             smoke-min/Sources/**

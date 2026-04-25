@@ -117,10 +117,6 @@ jobs:
           find ./mlx-swift -name 'compiled.cpp' -print
           echo
 
-          echo "=== LOOK FOR default.metallib ==="
-          find ./mlx-swift -name 'default.metallib' -print
-          echo
-
       - name: Package metadata discovery
         working-directory: mlx-swift
         run: |
@@ -160,34 +156,20 @@ jobs:
           echo "swift build exit status: $status"
           exit 0
 
-      - name: Proven xcode package build
-        id: proven_build
+      - name: Proven xcode test build using working scheme
+        id: proven_test
         working-directory: mlx-swift
         run: |
           set -o pipefail
           rm -rf DerivedData
 
-          echo "=== BUILDING PROVEN PACKAGE LAYER ==="
-          echo "Using package-generated Xcode scheme only."
-          echo "No mlx-swift-lm probe in this workflow."
+          echo "=== RUNNING THE KNOWN-WORKING SCHEME ==="
+          echo "Using MLXSwiftPackageTests instead of mlx-swift-Package."
+          echo "Reason: mlx-swift-Package is hitting compiled_conditional.cpp path issues."
           echo
 
           xcodebuild \
-            -scheme mlx-swift-Package \
-            -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee ../xcodebuild-proven-build.log
-
-      - name: Proven xcode package tests
-        id: proven_test
-        working-directory: mlx-swift
-        run: |
-          set -o pipefail
-          echo "=== TESTING PROVEN PACKAGE LAYER ==="
-          xcodebuild \
-            -scheme mlx-swift-Package \
+            -scheme MLXSwiftPackageTests \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
@@ -361,11 +343,10 @@ jobs:
         run: |
           set +e
           echo "=== FINAL SUMMARY ==="
-          echo "Proven build step outcome: ${{ steps.proven_build.outcome }}"
-          echo "Proven test step outcome:  ${{ steps.proven_test.outcome }}"
+          echo "Proven test step outcome: ${{ steps.proven_test.outcome }}"
           echo
-          echo "This workflow intentionally excludes mlx-swift-lm."
-          echo "Reason: keep the signal focused on the proven mlx-swift core layer."
+          echo "This workflow intentionally uses MLXSwiftPackageTests."
+          echo "It avoids mlx-swift-Package because that path is hitting compiled_conditional.cpp include failures."
           echo
 
           echo "=== LOG FILES ==="

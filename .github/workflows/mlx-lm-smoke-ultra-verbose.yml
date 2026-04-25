@@ -1,4 +1,4 @@
-name: MLX Swift Repro And Diff Ultra Verbose
+name: MLX Swift Historical Ref Probe Ultra Verbose
 
 on:
   workflow_dispatch:
@@ -7,10 +7,21 @@ on:
   pull_request:
 
 jobs:
-  repro-and-diff:
-    name: Reproduce prior pass and diff against failing path on macOS
+  probe-historical-refs:
+    name: Probe mlx-swift refs for working scheme on macOS
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - main
+          - 0.31.3
+          - 0.31.2
+          - 0.31.1
+          - 0.31.0
+          - 0.30.0
 
     env:
       NSUnbufferedIO: "YES"
@@ -24,23 +35,23 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Section 0 - Toolchain and machine info
+      - name: Toolchain and machine info
         shell: bash
         run: |
           set +e
           mkdir -p logs artifacts
 
           {
+            echo "=== MATRIX REF ==="
+            echo "${{ matrix.ref }}"
+            echo
+
             echo "=== DATE UTC ==="
             date -u
             echo
 
             echo "=== PWD ==="
             pwd
-            echo
-
-            echo "=== TOP LEVEL ==="
-            ls -la
             echo
 
             echo "=== sw_vers ==="
@@ -59,10 +70,6 @@ jobs:
             xcodebuild -version
             echo
 
-            echo "=== xcodebuild -showsdks ==="
-            xcodebuild -showsdks
-            echo
-
             echo "=== swift --version ==="
             swift --version
             echo
@@ -78,36 +85,38 @@ jobs:
             echo "=== env | sort ==="
             env | sort
             echo
-          } | tee logs/00-toolchain.log
+          } | tee "logs/00-toolchain-${{ matrix.ref }}.log"
 
-      - name: Section 1 - Clone mlx-swift fresh
+      - name: Clone mlx-swift at target ref
         shell: bash
         run: |
           set -euxo pipefail
           rm -rf mlx-swift
-          git clone --depth=1 https://github.com/ml-explore/mlx-swift.git mlx-swift
+          git clone https://github.com/ml-explore/mlx-swift.git mlx-swift
+          cd mlx-swift
+          git fetch --tags --force
+          git checkout "${{ matrix.ref }}"
 
           {
-            echo "=== ROOT TREE ==="
-            find . -maxdepth 2 | sed -n '1,400p'
+            echo "=== CHECKED OUT REF ==="
+            echo "${{ matrix.ref }}"
             echo
 
-            echo "=== MLX-SWIFT TOP LEVEL ==="
-            ls -la mlx-swift
-            echo
-
-            echo "=== MLX-SWIFT GIT HEAD ==="
-            cd mlx-swift
+            echo "=== RESOLVED HEAD ==="
             git rev-parse HEAD
-            git log -1 --decorate --stat
-          } | tee logs/01-clone.log
+            echo
 
-      - name: Section 2 - Repository truth dump
+            echo "=== LAST COMMIT ==="
+            git log -1 --decorate --stat
+            echo
+          } | tee "../logs/01-clone-${{ matrix.ref }}.log"
+
+      - name: Repository truth dump
         shell: bash
         run: |
           set +e
           {
-            echo "=== IMPORTANT PATH ASSERTIONS ==="
+            echo "=== IMPORTANT PATHS ==="
             for p in \
               "./mlx-swift" \
               "./mlx-swift/Package.swift" \
@@ -124,8 +133,8 @@ jobs:
             done
             echo
 
-            echo "=== FIRST 600 PATHS UNDER mlx-swift ==="
-            find ./mlx-swift | sed -n '1,600p'
+            echo "=== FIRST 500 PATHS UNDER mlx-swift ==="
+            find ./mlx-swift | sed -n '1,500p'
             echo
 
             echo "=== FIND compiled_conditional.cpp ==="
@@ -136,46 +145,46 @@ jobs:
             find ./mlx-swift -name 'compiled.cpp' -print
             echo
 
-            echo "=== FIND default.metallib ==="
-            find ./mlx-swift -name 'default.metallib' -print
-            echo
-
-            echo "=== GREP Package.swift for exclude and Cmlx ==="
-            grep -nE 'exclude:|Cmlx|compiled_conditional|compiled\.cpp' ./mlx-swift/Package.swift || true
+            echo "=== GREP Package.swift for schemes/excludes/Cmlx ==="
+            grep -nE 'exclude:|Cmlx|compiled_conditional|compiled\.cpp|MLXSwiftPackageTests|mlx-swift-Package' ./mlx-swift/Package.swift || true
             echo
 
             echo "=== Package.swift HEAD 400 lines ==="
             sed -n '1,400p' ./mlx-swift/Package.swift
             echo
-          } | tee logs/02-repo-truth.log
+          } | tee "logs/02-repo-truth-${{ matrix.ref }}.log"
 
-      - name: Section 3 - SwiftPM metadata
+      - name: SwiftPM metadata
         shell: bash
         working-directory: mlx-swift
         run: |
           set +e
-          swift package describe 2>&1 | tee ../logs/03-swift-package-describe.log
-          swift package dump-package 2>&1 | tee ../logs/03-swift-package-dump-package.log
-          swift package tools-version 2>&1 | tee ../logs/03-swift-package-tools-version.log
-          swift package resolve 2>&1 | tee ../logs/03-swift-package-resolve.log
-          swift build -v 2>&1 | tee ../logs/03-swift-build-v.log
+          swift package describe 2>&1 | tee "../logs/03-swift-package-describe-${{ matrix.ref }}.log"
+          swift package dump-package 2>&1 | tee "../logs/03-swift-package-dump-package-${{ matrix.ref }}.log"
+          swift package tools-version 2>&1 | tee "../logs/03-swift-package-tools-version-${{ matrix.ref }}.log"
+          swift package resolve 2>&1 | tee "../logs/03-swift-package-resolve-${{ matrix.ref }}.log"
+          swift build -v 2>&1 | tee "../logs/03-swift-build-v-${{ matrix.ref }}.log"
           exit 0
 
-      - name: Section 4 - Xcode scheme discovery
-        id: schemes
+      - name: Discover Xcode schemes
+        id: discover
         shell: bash
         working-directory: mlx-swift
         run: |
           set -o pipefail
-          xcodebuild -list 2>&1 | tee ../logs/04-xcodebuild-list.log
-          xcodebuild -list -json 2>&1 | tee ../logs/04-xcodebuild-list-json.log
+          xcodebuild -list 2>&1 | tee "../logs/04-xcodebuild-list-${{ matrix.ref }}.log"
+          xcodebuild -list -json 2>&1 | tee "../logs/04-xcodebuild-list-json-${{ matrix.ref }}.log"
 
           python3 - <<'PY'
-          import json, os
+          import json
+          import os
 
-          txt = open("../logs/04-xcodebuild-list-json.log", "r", encoding="utf-8").read()
+          ref = os.environ["REF_NAME"]
+          path = f"../logs/04-xcodebuild-list-json-{ref}.log"
+          txt = open(path, "r", encoding="utf-8", errors="replace").read()
           start = txt.find("{")
           schemes = []
+
           if start != -1:
               try:
                   obj = json.loads(txt[start:])
@@ -184,18 +193,12 @@ jobs:
               except Exception:
                   schemes = []
 
-          with open("../artifacts/schemes.txt", "w", encoding="utf-8") as f:
+          with open(f"../artifacts/schemes-{ref}.txt", "w", encoding="utf-8") as f:
               for s in schemes:
                   f.write(s + "\n")
 
-          preferred_repro = "MLXSwiftPackageTests"
-          preferred_current = "mlx-swift-Package"
-
-          repro = preferred_repro if preferred_repro in schemes else ""
-          current = preferred_current if preferred_current in schemes else ""
-
-          # If historic scheme is absent, keep it blank on purpose.
-          # If current scheme is absent, fall back to first scheme for diagnostics.
+          repro = "MLXSwiftPackageTests" if "MLXSwiftPackageTests" in schemes else ""
+          current = "mlx-swift-Package" if "mlx-swift-Package" in schemes else ""
           if not current and schemes:
               current = schemes[0]
 
@@ -203,13 +206,28 @@ jobs:
               f.write(f"REPRO_SCHEME={repro}\n")
               f.write(f"CURRENT_SCHEME={current}\n")
 
-          print("Detected schemes:", schemes)
+          print("schemes =", schemes)
           print("REPRO_SCHEME =", repro)
           print("CURRENT_SCHEME =", current)
           PY
+        env:
+          REF_NAME: ${{ matrix.ref }}
 
-      - name: Section 5 - Reproduce candidate historic successful path
-        id: repro_path
+      - name: Emit scheme summary
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== SCHEME SUMMARY FOR REF ${{ matrix.ref }} ==="
+            echo "REPRO_SCHEME=${REPRO_SCHEME:-}"
+            echo "CURRENT_SCHEME=${CURRENT_SCHEME:-}"
+            echo
+            echo "=== RAW SCHEMES FILE ==="
+            cat "artifacts/schemes-${{ matrix.ref }}.txt" 2>/dev/null || true
+            echo
+          } | tee "logs/05-scheme-summary-${{ matrix.ref }}.log"
+
+      - name: Run candidate historic scheme
         if: env.REPRO_SCHEME != ''
         shell: bash
         working-directory: mlx-swift
@@ -219,13 +237,11 @@ jobs:
           rm -rf DerivedDataRepro
 
           {
-            echo "=== REPRO PATH ==="
-            echo "Attempting candidate historic successful path."
+            echo "=== RUNNING HISTORIC CANDIDATE SCHEME ==="
+            echo "REF=${{ matrix.ref }}"
             echo "SCHEME=$REPRO_SCHEME"
-            echo "COMMAND:"
-            echo "xcodebuild -scheme \"$REPRO_SCHEME\" -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedDataRepro CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test"
             echo
-          } | tee ../logs/05-repro-intro.log
+          } | tee "../logs/06-repro-intro-${{ matrix.ref }}.log"
 
           xcodebuild \
             -scheme "$REPRO_SCHEME" \
@@ -233,25 +249,24 @@ jobs:
             -derivedDataPath DerivedDataRepro \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | tee ../logs/05-repro-xcodebuild.log
+            test 2>&1 | tee "../logs/06-repro-xcodebuild-${{ matrix.ref }}.log"
 
           status=${PIPESTATUS[0]}
-          echo "REPRO_EXIT_STATUS=$status" | tee ../artifacts/repro-exit-status.txt
+          echo "$status" > "../artifacts/repro-exit-status-${{ matrix.ref }}.txt"
           exit 0
 
-      - name: Section 5b - Repro path absent
+      - name: Record missing historic scheme
         if: env.REPRO_SCHEME == ''
         shell: bash
         run: |
           set +e
           {
-            echo "=== REPRO PATH SKIPPED ==="
-            echo "Candidate historic scheme MLXSwiftPackageTests is not present in this clone/layout."
-            echo "This itself is a useful diff signal."
-          } | tee logs/05-repro-missing.log
+            echo "=== HISTORIC SCHEME ABSENT ==="
+            echo "REF=${{ matrix.ref }}"
+            echo "MLXSwiftPackageTests is not present at this ref/layout."
+          } | tee "logs/06-repro-missing-${{ matrix.ref }}.log"
 
-      - name: Section 6 - Run current failing path
-        id: current_path
+      - name: Run current detected scheme
         if: env.CURRENT_SCHEME != ''
         shell: bash
         working-directory: mlx-swift
@@ -261,13 +276,11 @@ jobs:
           rm -rf DerivedDataCurrent
 
           {
-            echo "=== CURRENT PATH ==="
-            echo "Running current chosen path."
+            echo "=== RUNNING CURRENT DETECTED SCHEME ==="
+            echo "REF=${{ matrix.ref }}"
             echo "SCHEME=$CURRENT_SCHEME"
-            echo "COMMAND:"
-            echo "xcodebuild -scheme \"$CURRENT_SCHEME\" -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedDataCurrent CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test"
             echo
-          } | tee ../logs/06-current-intro.log
+          } | tee "../logs/07-current-intro-${{ matrix.ref }}.log"
 
           xcodebuild \
             -scheme "$CURRENT_SCHEME" \
@@ -275,13 +288,13 @@ jobs:
             -derivedDataPath DerivedDataCurrent \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | tee ../logs/06-current-xcodebuild.log
+            test 2>&1 | tee "../logs/07-current-xcodebuild-${{ matrix.ref }}.log"
 
           status=${PIPESTATUS[0]}
-          echo "CURRENT_EXIT_STATUS=$status" | tee ../artifacts/current-exit-status.txt
+          echo "$status" > "../artifacts/current-exit-status-${{ matrix.ref }}.txt"
           exit 0
 
-      - name: Section 7 - Extract first errors and key signals
+      - name: Analyze logs for this ref
         if: always()
         shell: bash
         run: |
@@ -289,20 +302,20 @@ jobs:
 
           python3 - <<'PY'
           import os
-          import re
 
+          ref = os.environ["REF_NAME"]
           pairs = [
-              ("repro", "logs/05-repro-xcodebuild.log"),
-              ("current", "logs/06-current-xcodebuild.log"),
+              ("repro", f"logs/06-repro-xcodebuild-{ref}.log"),
+              ("current", f"logs/07-current-xcodebuild-{ref}.log"),
           ]
 
           os.makedirs("artifacts", exist_ok=True)
 
           for label, path in pairs:
-              out = [f"=== ANALYSIS FOR {label.upper()} ==="]
+              out = [f"=== ANALYSIS FOR {label.upper()} @ {ref} ==="]
               if not os.path.exists(path):
                   out.append("log missing")
-                  open(f"artifacts/{label}-analysis.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
+                  open(f"artifacts/{label}-analysis-{ref}.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
                   continue
 
               txt = open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
@@ -312,7 +325,6 @@ jobs:
               build_failed = [line for line in txt if "** BUILD FAILED **" in line]
               test_failed = [line for line in txt if "** TEST FAILED **" in line]
               scheme_missing = [line for line in txt if "does not contain a scheme named" in line]
-              compiled_missing = [line for line in txt if "compiled.cpp" in line]
               success_tests = [line for line in txt if "Executed " in line and "tests" in line and "0 failures" in line]
 
               out.append(f"invalid exclude count: {len(invalid)}")
@@ -320,8 +332,7 @@ jobs:
               out.append(f"build failed markers: {len(build_failed)}")
               out.append(f"test failed markers: {len(test_failed)}")
               out.append(f"missing scheme markers: {len(scheme_missing)}")
-              out.append(f"compiled.cpp mentions: {len(compiled_missing)}")
-              out.append(f'successful test summary markers: {len(success_tests)}')
+              out.append(f"successful test summary markers: {len(success_tests)}")
               out.append("")
 
               if invalid:
@@ -341,61 +352,32 @@ jobs:
                   out.extend(success_tests[:20])
                   out.append("")
 
-              open(f"artifacts/{label}-analysis.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
+              open(f"artifacts/{label}-analysis-{ref}.txt", "w", encoding="utf-8").write("\n".join(out) + "\n")
           PY
+        env:
+          REF_NAME: ${{ matrix.ref }}
 
+      - name: Emit ref summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
           {
+            echo "=== REF SUMMARY: ${{ matrix.ref }} ==="
+            echo "REPRO_SCHEME=${REPRO_SCHEME:-}"
+            echo "CURRENT_SCHEME=${CURRENT_SCHEME:-}"
+            echo
+
             echo "=== REPRO ANALYSIS ==="
-            cat artifacts/repro-analysis.txt 2>/dev/null || true
+            cat "artifacts/repro-analysis-${{ matrix.ref }}.txt" 2>/dev/null || true
             echo
+
             echo "=== CURRENT ANALYSIS ==="
-            cat artifacts/current-analysis.txt 2>/dev/null || true
+            cat "artifacts/current-analysis-${{ matrix.ref }}.txt" 2>/dev/null || true
             echo
-          } | tee logs/07-analysis-summary.log
+          } | tee "logs/08-ref-summary-${{ matrix.ref }}.log"
 
-      - name: Section 8 - Diff repro and current logs
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          {
-            echo "=== DIFF OF REPRO VS CURRENT LOGS ==="
-            if [ -f logs/05-repro-xcodebuild.log ] && [ -f logs/06-current-xcodebuild.log ]; then
-              diff -u logs/05-repro-xcodebuild.log logs/06-current-xcodebuild.log | sed -n '1,800p'
-            else
-              echo "One or both logs are missing, so full diff is unavailable."
-            fi
-            echo
-          } | tee logs/08-repro-vs-current-diff.log
-
-      - name: Section 9 - DerivedData truth dump
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          {
-            echo "=== REPRO DERIVED DATA TREE ==="
-            find mlx-swift/DerivedDataRepro | sed -n '1,800p' || true
-            echo
-
-            echo "=== CURRENT DERIVED DATA TREE ==="
-            find mlx-swift/DerivedDataCurrent | sed -n '1,800p' || true
-            echo
-
-            echo "=== XCRESULTS ==="
-            find . -name '*.xcresult' -print
-            echo
-
-            echo "=== XCTEST BUNDLES ==="
-            find . -name '*.xctest' -print
-            echo
-
-            echo "=== METALLIB FILES ==="
-            find . -name '*.metallib' -print
-            echo
-          } | tee logs/09-deriveddata.log
-
-      - name: Section 10 - Minimal SwiftPM smoke scaffold
+      - name: Minimal SwiftPM smoke scaffold
         if: always()
         shell: bash
         run: |
@@ -462,68 +444,83 @@ jobs:
           log("=== SMOKE MIN END ===")
           EOF
 
-          {
-            echo "=== smoke-min tree ==="
-            find smoke-min | sed -n '1,300p'
-          } | tee logs/10-smoke-min-scaffold.log
-
-      - name: Section 11 - Build and run minimal SwiftPM smoke
+      - name: Build and run minimal SwiftPM smoke
         if: always()
         shell: bash
         working-directory: smoke-min
         continue-on-error: true
         run: |
           set +e
-          swift package describe 2>&1 | tee ../logs/11-smoke-min-describe.log
-          swift package resolve 2>&1 | tee ../logs/11-smoke-min-resolve.log
-          swift build -v 2>&1 | tee ../logs/11-smoke-min-build.log
+          swift package describe 2>&1 | tee "../logs/09-smoke-min-describe-${{ matrix.ref }}.log"
+          swift package resolve 2>&1 | tee "../logs/09-smoke-min-resolve-${{ matrix.ref }}.log"
+          swift build -v 2>&1 | tee "../logs/09-smoke-min-build-${{ matrix.ref }}.log"
 
           BIN="$(find .build -type f -name SmokeMin | head -n 1)"
-          echo "BIN=$BIN" | tee ../logs/11-smoke-min-run.log
-          echo "=== .build metallib files ===" | tee -a ../logs/11-smoke-min-run.log
-          find .build -name '*.metallib' -print | tee -a ../logs/11-smoke-min-run.log
+          echo "BIN=$BIN" | tee "../logs/09-smoke-min-run-${{ matrix.ref }}.log"
+          echo "=== .build metallib files ===" | tee -a "../logs/09-smoke-min-run-${{ matrix.ref }}.log"
+          find .build -name '*.metallib' -print | tee -a "../logs/09-smoke-min-run-${{ matrix.ref }}.log"
 
           if [ -n "$BIN" ] && [ -x "$BIN" ]; then
-            "$BIN" 2>&1 | tee -a ../logs/11-smoke-min-run.log
+            "$BIN" 2>&1 | tee -a "../logs/09-smoke-min-run-${{ matrix.ref }}.log"
           else
-            echo "SmokeMin binary missing or not executable" | tee -a ../logs/11-smoke-min-run.log
+            echo "SmokeMin binary missing or not executable" | tee -a "../logs/09-smoke-min-run-${{ matrix.ref }}.log"
           fi
 
           exit 0
 
-      - name: Section 12 - Final summary
+      - name: Derived data truth dump
         if: always()
         shell: bash
         run: |
           set +e
           {
-            echo "=== FINAL SUMMARY ==="
+            echo "=== DERIVED DATA REPRO TREE ==="
+            find mlx-swift/DerivedDataRepro | sed -n '1,600p' || true
+            echo
+
+            echo "=== DERIVED DATA CURRENT TREE ==="
+            find mlx-swift/DerivedDataCurrent | sed -n '1,600p' || true
+            echo
+
+            echo "=== XCRESULTS ==="
+            find . -name '*.xcresult' -print
+            echo
+
+            echo "=== XCTEST BUNDLES ==="
+            find . -name '*.xctest' -print
+            echo
+
+            echo "=== METALLIB FILES ==="
+            find . -name '*.metallib' -print
+            echo
+          } | tee "logs/10-deriveddata-${{ matrix.ref }}.log"
+
+      - name: Final per-ref summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== FINAL PER-REF SUMMARY ==="
+            echo "REF=${{ matrix.ref }}"
             echo "REPRO_SCHEME=${REPRO_SCHEME:-}"
             echo "CURRENT_SCHEME=${CURRENT_SCHEME:-}"
             echo
 
-            echo "Repro path objective:"
-            echo "Try to reproduce the earlier reported strong pass path."
+            echo "=== AVAILABLE LOG FILES FOR THIS REF ==="
+            find logs -type f -name "*${{ matrix.ref }}*" | sort
             echo
 
-            echo "Current path objective:"
-            echo "Run the current package scheme and compare behavior."
+            echo "=== AVAILABLE ARTIFACT FILES FOR THIS REF ==="
+            find artifacts -type f -name "*${{ matrix.ref }}*" | sort
             echo
+          } | tee "logs/11-final-summary-${{ matrix.ref }}.log"
 
-            echo "Log files:"
-            find logs -type f | sort
-            echo
-
-            echo "Artifact files:"
-            find artifacts -type f | sort
-            echo
-          } | tee logs/12-final-summary.log
-
-      - name: Upload diagnostic artifacts
+      - name: Upload per-ref artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-swift-repro-and-diff-diagnostics
+          name: mlx-swift-historical-probe-${{ matrix.ref }}
           if-no-files-found: warn
           path: |
             logs/**

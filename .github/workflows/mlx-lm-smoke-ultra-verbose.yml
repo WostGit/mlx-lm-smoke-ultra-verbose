@@ -21,6 +21,12 @@ jobs:
       MIN_EXPECTED_TESTS: "500"
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
       - name: Prepare folders
         shell: bash
         run: |
@@ -31,6 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
           {
             echo "=== TOOLCHAIN ==="
             date -u
@@ -44,16 +52,12 @@ jobs:
             xcrun --find metallib || true
           } 2>&1 | tee "$LOG_DIR/00-toolchain.log"
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
       - name: Repository proof
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
           {
             echo "=== REPOSITORY PROOF ==="
             echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
@@ -88,6 +92,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
+          rm -rf "$MLX_SWIFT_DIR"
+
           {
             echo "=== CLONE MLX SWIFT ==="
             git clone --recursive https://github.com/ml-explore/mlx-swift.git "$MLX_SWIFT_DIR"
@@ -99,6 +107,9 @@ jobs:
             echo "=== MLX SWIFT HEAD ==="
             git rev-parse HEAD
             echo
+            echo "=== MLX SWIFT STATUS ==="
+            git status --short
+            echo
             echo "=== MLX SWIFT SUBMODULE STATUS ==="
             git submodule status --recursive
           } 2>&1 | tee "$LOG_DIR/02-clone-mlx-swift.log"
@@ -107,6 +118,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$MLX_SWIFT_DIR"
 
           swift package tools-version 2>&1 | tee "../$LOG_DIR/03-swift-package-tools-version.log"
@@ -118,6 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$MLX_SWIFT_DIR"
 
           xcodebuild -list 2>&1 | tee "../$LOG_DIR/04-xcodebuild-list.log"
@@ -140,6 +153,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$MLX_SWIFT_DIR"
 
           {
@@ -167,6 +181,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$MLX_SWIFT_DIR"
 
           {
@@ -222,6 +237,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
           {
             echo "=== METALLIB SCAN ==="
@@ -244,6 +260,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
           rm -rf "$SMOKE_DIR"
           mkdir -p "$SMOKE_DIR/Sources/SmokeProbe"
@@ -331,8 +348,10 @@ jobs:
             echo "=== SMOKE PACKAGE CREATED ==="
             find "$SMOKE_DIR" -maxdepth 4 -type f -print
             echo
+            echo "=== Package.swift ==="
             cat "$SMOKE_DIR/Package.swift"
             echo
+            echo "=== main.swift ==="
             cat "$SMOKE_DIR/Sources/SmokeProbe/main.swift"
           } 2>&1 | tee "$LOG_DIR/10-smoke-describe.log"
 
@@ -340,6 +359,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$SMOKE_DIR"
 
           swift package resolve 2>&1 | tee "../$LOG_DIR/10-smoke-resolve.log"
@@ -360,6 +380,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$SMOKE_DIR"
 
           set +e
@@ -386,6 +407,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
           cd "$SMOKE_DIR"
 
           set +e
@@ -406,6 +428,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
+
           {
             echo "=== SHA256 CHECKSUMS ==="
             shasum -a 256 "$LOG_DIR"/*.log "$ARTIFACT_DIR"/* 2>/dev/null || true
@@ -417,10 +441,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$LOG_DIR" "$ARTIFACT_DIR"
 
           REPO_HEAD="$(cat "$ARTIFACT_DIR/repo-head.txt")"
           TEST_COUNT="$(grep -Eo 'TOTAL_EXECUTED_TESTS=[0-9]+' "$ARTIFACT_DIR/test-summary.txt" | tail -1 | cut -d= -f2)"
-          METALLIB_COUNT="$(cat "$ARTIFACT_DIR/metallib-count.txt")"
+          METALLIB_COUNT="$(cut -d= -f2 "$ARTIFACT_DIR/metallib-count.txt")"
           BUILD_EXIT="$(cat "$ARTIFACT_DIR/build-exit-status.txt")"
           TEST_EXIT="$(cat "$ARTIFACT_DIR/test-exit-status.txt")"
           SMOKE_BUILD_EXIT="$(cat "$ARTIFACT_DIR/smoke-build-exit-status.txt")"
